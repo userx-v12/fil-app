@@ -38,16 +38,26 @@ const MODES = {
   tv:    { label: "Séries", sub: "TV uniquement",     types: ["tv"] },
 };
 
+const ERAS = {
+  all:    { label: "Toutes les époques", year: null },
+  e2020:  { label: "Depuis 2020",        year: 2020 },
+  e2010:  { label: "Depuis 2010",        year: 2010 },
+  e2000:  { label: "Depuis 2000",        year: 2000 },
+  e1990:  { label: "Depuis 1990",        year: 1990 },
+  e1980:  { label: "Depuis 1980",        year: 1980 },
+  before1980: { label: "Avant 1980",     year: null, maxYear: 1980 },
+};
+
 const DEFAULT_PREFS = {
   mode: "movie",
   difficulty: "random",
   languages: ["en", "fr"],
   excludeGenres: [16, 99],
+  era: "all",
 };
 
 const RED = "#dc2626";
 
-// Renvoie la catégorie de difficulté en fonction du nombre d'étapes optimales
 function categorizeDifficulty(optimalSteps) {
   if (optimalSteps === null || optimalSteps === undefined) return null;
   if (optimalSteps <= 3) return "easy";
@@ -70,9 +80,10 @@ const setCachedFilmo = (aid, m) => filmoCache.set(aid, m);
 // LOCAL STORAGE
 // =========================================================================
 
-const LS_PREFS = "fil-prefs-v4";
+const LS_PREFS = "fil-prefs-v5";
 const LS_THEME = "fil-theme";
 const LS_GAMES_PLAYED = "fil-games-played";
+const LS_INFO_SEEN = "fil-info-seen";
 
 function loadPrefs() {
   try {
@@ -82,7 +93,10 @@ function loadPrefs() {
   } catch { return DEFAULT_PREFS; }
 }
 function savePrefs(p) { try { localStorage.setItem(LS_PREFS, JSON.stringify(p)); } catch {} }
-function loadTheme() { try { return localStorage.getItem(LS_THEME) || "light"; } catch { return "light"; } }
+function loadTheme() {
+  try { return localStorage.getItem(LS_THEME) || "dark"; }
+  catch { return "dark"; }
+}
 function saveTheme(t) { try { localStorage.setItem(LS_THEME, t); } catch {} }
 function loadGamesPlayed() { try { return parseInt(localStorage.getItem(LS_GAMES_PLAYED) || "0", 10); } catch { return 0; } }
 function incrementGamesPlayed() {
@@ -92,6 +106,8 @@ function incrementGamesPlayed() {
     return c + 1;
   } catch { return 0; }
 }
+function loadInfoSeen() { try { return localStorage.getItem(LS_INFO_SEEN) === "1"; } catch { return false; } }
+function markInfoSeen() { try { localStorage.setItem(LS_INFO_SEEN, "1"); } catch {} }
 
 // =========================================================================
 // URL SHARING
@@ -233,6 +249,12 @@ async function getCandidatePool(prefs, limit = 500) {
   if (prefs.languages?.length && prefs.languages.length < Object.keys(LANGUAGES).length) {
     q = q.in("original_language", prefs.languages);
   }
+
+  // Filtres époque
+  const eraConfig = ERAS[prefs.era] || ERAS.all;
+  if (eraConfig.year) q = q.gte("year", eraConfig.year);
+  if (eraConfig.maxYear) q = q.lt("year", eraConfig.maxYear);
+
   const { data, error } = await q;
   if (error) throw error;
   if (!data) return [];
@@ -359,6 +381,7 @@ const THEMES = {
     radialA: "rgba(15,23,41,0.06)", radialB: "rgba(15,23,41,0.05)",
     cardHover: "rgba(15,23,41,0.04)", cardBg: "rgba(255,255,255,0.5)",
     cardBg2: "rgba(255,255,255,0.4)", iconBtnBg: "rgba(255,255,255,0.6)",
+    modalOverlay: "rgba(15,23,41,0.5)",
   },
   dark: {
     name: "dark", bg: "#0a0e18", ink: "#fafafa",
@@ -370,6 +393,7 @@ const THEMES = {
     radialA: "rgba(99, 102, 241, 0.08)", radialB: "rgba(244, 114, 182, 0.06)",
     cardHover: "rgba(250,250,250,0.06)", cardBg: "rgba(255,255,255,0.04)",
     cardBg2: "rgba(255,255,255,0.03)", iconBtnBg: "rgba(255,255,255,0.06)",
+    modalOverlay: "rgba(0,0,0,0.7)",
   },
 };
 
@@ -399,7 +423,7 @@ const gradientFor = (id) => GRADIENT_PALETTE[hashId(id) % GRADIENT_PALETTE.lengt
 const isTv = (m) => m && m.type === "tv";
 
 // =========================================================================
-// IMAGES
+// IMAGES (Poster, ActorPhoto, TvLabel, Logo, LogoMark, Spinner)
 // =========================================================================
 
 function Poster({ movie, size = 60, rounded = 10, highlight = false, highlightColor, themeColors }) {
@@ -566,6 +590,130 @@ function AccountIcon({ color }) {
 }
 
 // =========================================================================
+// INFO MODAL (Comment jouer)
+// =========================================================================
+
+function InfoModal({ onClose, themeColors, glass, glassDark }) {
+  const C = themeColors;
+  return (
+    <div onClick={onClose}
+      style={{ position: "fixed", inset: 0, background: C.modalOverlay,
+        backdropFilter: "blur(8px)", zIndex: 500,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        padding: 20, animation: "fadeIn .25s ease both" }}>
+      <style>{`
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes flowExample {
+          0%, 100% { opacity: 0.4; }
+          50% { opacity: 1; }
+        }
+        .flow-node {
+          animation: flowExample 3s ease-in-out infinite;
+        }
+        .flow-node-1 { animation-delay: 0s; }
+        .flow-node-2 { animation-delay: 0.5s; }
+        .flow-node-3 { animation-delay: 1s; }
+        .flow-node-4 { animation-delay: 1.5s; }
+        .flow-node-5 { animation-delay: 2s; }
+      `}</style>
+      <div onClick={(e) => e.stopPropagation()}
+        style={{ ...glass, borderRadius: 24, padding: "28px 24px",
+          maxWidth: 440, width: "100%", maxHeight: "85vh", overflowY: "auto",
+          animation: "slideUp .35s cubic-bezier(.34,1.56,.64,1) both",
+          position: "relative" }}>
+        <button onClick={onClose}
+          style={{ position: "absolute", top: 14, right: 14,
+            background: C.iconBtnBg, border: `1px solid ${C.hairline}`,
+            borderRadius: "50%", width: 30, height: 30,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            cursor: "pointer", color: C.ink, fontFamily: "inherit", fontSize: 14 }}>✕</button>
+
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: 14 }}>
+          <Logo size={26} color={C.ink} />
+        </div>
+        <h2 style={{ fontWeight: 800, fontSize: 28, letterSpacing: -1.2,
+          textAlign: "center", margin: "0 0 6px", color: C.ink }}>Comment jouer</h2>
+        <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase",
+          color: C.inkSoft, textAlign: "center", marginBottom: 20, fontWeight: 600 }}>Le concept</div>
+
+        <p style={{ fontSize: 14, lineHeight: 1.6, color: C.ink, margin: "0 0 8px", fontWeight: 500 }}>
+          Tu reçois <strong>deux films</strong> : un de départ, un d'arrivée.
+        </p>
+        <p style={{ fontSize: 14, lineHeight: 1.6, color: C.ink, margin: "0 0 22px", fontWeight: 500 }}>
+          Ton but : aller de l'un à l'autre en passant par <strong>les acteurs qu'ils ont en commun</strong> avec d'autres films.
+        </p>
+
+        {/* Exemple visuel animé */}
+        <div style={{ background: C.cardBg, borderRadius: 16, padding: "16px 12px", marginBottom: 22,
+          border: `1px solid ${C.hairline}` }}>
+          <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase",
+            color: C.inkMute, marginBottom: 12, textAlign: "center", fontWeight: 600 }}>Exemple</div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4, flexWrap: "wrap" }}>
+            <ExampleNode label="Interstellar" type="movie" className="flow-node flow-node-1" color={C.ink} />
+            <ExampleArrow color={C.inkMute} />
+            <ExampleNode label="McConaughey" type="actor" className="flow-node flow-node-2" color={C.inkSoft} />
+            <ExampleArrow color={C.inkMute} />
+            <ExampleNode label="Dallas Buyers Club" type="movie" className="flow-node flow-node-3" color={C.ink} />
+            <ExampleArrow color={C.inkMute} />
+            <ExampleNode label="Jared Leto" type="actor" className="flow-node flow-node-4" color={C.inkSoft} />
+            <ExampleArrow color={C.inkMute} />
+            <ExampleNode label="Fight Club" type="movie" className="flow-node flow-node-5" color={C.ink} />
+          </div>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <Rule num="1" text="Clique sur un acteur du film de départ" C={C} />
+          <Rule num="2" text="Choisis un de ses films, qui devient ton nouveau point" C={C} />
+          <Rule num="3" text="Recommence jusqu'à atteindre le film d'arrivée" C={C} />
+          <Rule num="4" text="Moins d'étapes = meilleur score" C={C} />
+        </div>
+
+        <div style={{ marginTop: 22, paddingTop: 18, borderTop: `1px solid ${C.hairline}`,
+          fontSize: 12, color: C.inkSoft, lineHeight: 1.5 }}>
+          💡 <strong>Astuce</strong> : utilise le bouton <strong>indice</strong> (ampoule) si tu es bloqué.
+          Il met en évidence l'acteur ou le film à choisir.
+        </div>
+
+        <button onClick={onClose}
+          style={{ ...glassDark, borderRadius: 999, padding: "12px 24px",
+            border: "none", cursor: "pointer", fontFamily: "inherit",
+            fontSize: 12, fontWeight: 700, letterSpacing: 1.3, textTransform: "uppercase",
+            marginTop: 22, width: "100%" }}>
+          C'est parti !
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ExampleNode({ label, type, className, color }) {
+  const isMovie = type === "movie";
+  return (
+    <span className={className}
+      style={{ fontSize: isMovie ? 11 : 10, fontWeight: isMovie ? 700 : 500,
+        color, padding: "5px 9px", borderRadius: 999,
+        background: isMovie ? "rgba(255,255,255,0.08)" : "transparent",
+        border: isMovie ? "1px solid rgba(255,255,255,0.12)" : "none",
+        whiteSpace: "nowrap", letterSpacing: -0.2 }}>{label}</span>
+  );
+}
+function ExampleArrow({ color }) {
+  return <span style={{ color, fontSize: 11, fontWeight: 600 }}>→</span>;
+}
+function Rule({ num, text, C }) {
+  return (
+    <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+      <div style={{ width: 22, height: 22, borderRadius: "50%",
+        background: C.ink, color: C.bg, fontWeight: 700,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        fontSize: 11, flexShrink: 0 }}>{num}</div>
+      <div style={{ fontSize: 13, color: C.ink, lineHeight: 1.5, paddingTop: 1 }}>{text}</div>
+    </div>
+  );
+}
+
+// =========================================================================
 // APP
 // =========================================================================
 
@@ -584,9 +732,19 @@ export default function App() {
   const [error, setError] = useState(null);
   const [prefs, setPrefs] = useState(loadPrefs);
   const [gamesPlayed, setGamesPlayed] = useState(loadGamesPlayed);
+  const [showInfo, setShowInfo] = useState(false);
 
   useEffect(() => { savePrefs(prefs); }, [prefs]);
   useEffect(() => { document.body.style.background = C.bg; saveTheme(theme); }, [theme, C.bg]);
+
+  // 1er lancement : afficher la modal info automatiquement
+  useEffect(() => {
+    if (!loadInfoSeen()) {
+      setShowInfo(true);
+      markInfoSeen();
+    }
+  }, []);
+
   useEffect(() => {
     const urlChallenge = getChallengeFromURL();
     if (urlChallenge) loadChallengeFromURL(urlChallenge.startId, urlChallenge.endId);
@@ -672,7 +830,6 @@ export default function App() {
   function retrySame() { setGameKey(k => k + 1); }
   function onGameFinished() { setGamesPlayed(incrementGamesPlayed()); }
 
-  // Bouton thème et compte visibles partout SAUF sur l'écran du jeu (pour pas surcharger)
   const showTopButtons = screen !== "game";
 
   return (
@@ -688,6 +845,7 @@ export default function App() {
           </TopRoundButton>
         </>
       )}
+      {showInfo && <InfoModal onClose={() => setShowInfo(false)} themeColors={C} glass={glass} glassDark={glassDark} />}
       {loadingChallenge && (
         <div style={{ position: "fixed", inset: 0, background: theme === "light" ? "rgba(250,250,250,0.7)" : "rgba(10,14,24,0.7)", backdropFilter: "blur(8px)",
           zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -705,7 +863,7 @@ export default function App() {
         <Menu onNavigate={setScreen} onPlay={startRandom}
               prefs={prefs} setPrefs={setPrefs}
               themeColors={C} glass={glass} glassDark={glassDark}
-              gamesPlayed={gamesPlayed} />
+              gamesPlayed={gamesPlayed} onOpenInfo={() => setShowInfo(true)} />
       )}
       {screen === "game" && challenge && (
         <Game key={gameKey} challenge={challenge}
@@ -744,16 +902,16 @@ function Fonts() {
 }
 
 // =========================================================================
-// MENU PRINCIPAL (ÉPURÉ : Mode + Difficulté + 4 items)
+// MENU PRINCIPAL
 // =========================================================================
 
-function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDark, gamesPlayed }) {
+function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDark, gamesPlayed, onOpenInfo }) {
   const C = themeColors;
   const items = [
     { key: "play", label: "Jouer", sub: "Défi aléatoire", action: onPlay, primary: true },
     { key: "custom", label: "Sur Mesure", sub: "Choisis ton défi", action: () => onNavigate("custom") },
     { key: "multi", label: "Multijoueur", sub: "Affronte tes amis", action: () => onNavigate("multi") },
-    { key: "options", label: "Options", sub: "Langues, genres, plus", action: () => onNavigate("options") },
+    { key: "options", label: "Options", sub: "Langues, genres, époques", action: () => onNavigate("options") },
   ];
 
   return (
@@ -764,13 +922,19 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         .menu-item:hover { transform: translateY(-2px); }
       `}</style>
 
-      <div style={{ textAlign: "center", marginTop: 20, marginBottom: 40 }}>
+      <div style={{ textAlign: "center", marginTop: 20, marginBottom: 32 }}>
         <div style={{ display: "flex", justifyContent: "center", marginBottom: 20 }}><Logo size={32} color={C.ink} /></div>
         <h1 style={{ fontFamily: "'Manrope', sans-serif", fontWeight: 700, fontSize: 56, lineHeight: .95,
           letterSpacing: -3, margin: 0, color: C.ink }}>Fil</h1>
         <div style={{ fontSize: 11, letterSpacing: 4, textTransform: "uppercase", color: C.inkSoft, marginTop: 14, fontWeight: 500 }}>Relie les films</div>
+        <button onClick={onOpenInfo}
+          style={{ background: "none", border: "none", color: C.inkSoft, fontFamily: "inherit",
+            fontSize: 11, letterSpacing: 1.5, marginTop: 10, cursor: "pointer",
+            padding: "6px 12px", borderRadius: 999,
+            textDecoration: "underline", textUnderlineOffset: 3,
+            opacity: 0.7, fontWeight: 500 }}>Comment jouer ?</button>
         {gamesPlayed > 0 && (
-          <div style={{ fontSize: 10, letterSpacing: 2, color: C.inkMute, marginTop: 8, fontWeight: 500 }}>
+          <div style={{ fontSize: 10, letterSpacing: 2, color: C.inkMute, marginTop: 10, fontWeight: 500 }}>
             {gamesPlayed} {gamesPlayed > 1 ? "parties jouées" : "partie jouée"}
           </div>
         )}
@@ -828,13 +992,13 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.0</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.1</div>
     </div>
   );
 }
 
 // =========================================================================
-// OPTIONS SCREEN
+// OPTIONS SCREEN (avec filtres époque)
 // =========================================================================
 
 function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
@@ -860,8 +1024,9 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
       return { ...p, excludeGenres: has ? p.excludeGenres.filter(g => Number(g) !== n) : [...p.excludeGenres, n] };
     });
   }
+  function setEra(eraKey) { setPrefs(p => ({ ...p, era: eraKey })); }
   function resetDefaults() {
-    setPrefs(p => ({ ...p, languages: ["en", "fr"], excludeGenres: [16, 99] }));
+    setPrefs(p => ({ ...p, languages: ["en", "fr"], excludeGenres: [16, 99], era: "all" }));
   }
 
   return (
@@ -875,6 +1040,28 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
         <h2 style={{ fontWeight: 800, fontSize: 36, margin: 0, letterSpacing: -1.5, lineHeight: 1, color: C.ink }}>Réglages</h2>
       </div>
 
+      {/* Filtres époque */}
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 12 }}>Époque</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {Object.entries(ERAS).map(([key, e]) => {
+            const active = prefs.era === key;
+            return (
+              <button key={key} onClick={() => setEra(key)}
+                style={{ padding: "8px 14px", borderRadius: 999,
+                  border: `1px solid ${active ? C.ink : C.hairline}`,
+                  background: active ? C.ink : C.cardBg, color: active ? C.bg : C.ink,
+                  fontFamily: "inherit", fontSize: 12, fontWeight: 600,
+                  cursor: "pointer", transition: "all .15s" }}>{e.label}</button>
+            );
+          })}
+        </div>
+        <div style={{ fontSize: 11, color: C.inkMute, marginTop: 10, fontWeight: 500, lineHeight: 1.4 }}>
+          Filtre la sélection des films de départ et d'arrivée selon leur année.
+        </div>
+      </div>
+
+      {/* Langues */}
       <div style={{ marginBottom: 28 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
           <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Langues acceptées</div>
@@ -898,6 +1085,7 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
         </div>
       </div>
 
+      {/* Genres */}
       <div style={{ marginBottom: 28 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
           <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Genres exclus du tirage</div>
@@ -937,7 +1125,7 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
 }
 
 // =========================================================================
-// GAME
+// GAME (identique à v5.0)
 // =========================================================================
 
 function Game({ challenge, onExit, onReplay, onRetry, onFinished, themeColors, glass, glassDark, theme }) {
@@ -956,7 +1144,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, themeColors, g
   const [finished, setFinished] = useState(false);
   const [abandoned, setAbandoned] = useState(false);
   const [confirmingAbandon, setConfirmingAbandon] = useState(false);
-  const [filmoSort, setFilmoSort] = useState("popularity"); // "popularity" | "date"
+  const [filmoSort, setFilmoSort] = useState("popularity");
 
   const currentMovie = path[path.length - 1].data;
   const isAtEnd = currentMovie.id === challenge.end.id;
@@ -1009,11 +1197,9 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, themeColors, g
   const playerSteps = Math.max(0, Math.floor((path.length - 1) / 2));
   const formatTime = (ms) => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
 
-  // Sets pour l'indice (calcul léger en O(1))
   const visitedMovieIds = useMemo(() => new Set(path.filter(n => n.type === "movie").map(n => n.data.id)), [path]);
   const visitedActorIds = useMemo(() => new Set(path.filter(n => n.type === "actor").map(n => n.data.id)), [path]);
 
-  // Calcul du highlight vert depuis le chemin optimal
   const greenHint = useMemo(() => {
     if (!challenge.optimal || challenge.optimal.length < 2) return null;
     const idx = challenge.optimal.findIndex(n => n.type === "movie" && n.id === currentMovie.id);
@@ -1031,7 +1217,6 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, themeColors, g
     return null;
   }, [challenge.optimal, currentMovie.id, selectedActor]);
 
-  // Si aucun vert dispo et indice activé → on illumine en VERT le bouton retour
   const noGreenAvailable = hintActive && !greenHint;
   const showBackInGreen = hintActive && noGreenAvailable && (path.length > 1 || selectedActor);
 
@@ -1367,7 +1552,6 @@ function EndScreen({ path, optimal, elapsed, clicks, formatTime, playerSteps, ab
     else { verdict = `${diff} étapes de plus`; verdictColor = C.ink; animType = "ok"; }
   }
 
-  // Catégorie de difficulté basée sur l'optimal
   const difficultyCategory = categorizeDifficulty(optimalSteps);
   const difficultyLabel = difficultyCategory ? DIFFICULTIES[difficultyCategory].label : null;
   const modeLabel = modeUsed ? MODES[modeUsed]?.label : null;
@@ -1419,7 +1603,6 @@ function EndScreen({ path, optimal, elapsed, clicks, formatTime, playerSteps, ab
         }
       `}</style>
 
-      {/* Animations de fin — toutes derrière (zIndex 1, alors que tout le contenu est zIndex 10+) */}
       {animType === "optimal" && (
         <div style={{
           position: "fixed", top: 0, left: 0, right: 0, height: "65vh",
@@ -1450,7 +1633,6 @@ function EndScreen({ path, optimal, elapsed, clicks, formatTime, playerSteps, ab
         <div style={{ fontWeight: 800, fontSize: 36, lineHeight: 1.05, color: verdictColor, marginBottom: 8, letterSpacing: -1.4,
                       animation: isOptimal ? "verdictPop .55s cubic-bezier(.34,1.56,.64,1) both" : "none" }}>{verdict}</div>
 
-        {/* Catégorie de difficulté + mode joué */}
         {(modeLabel || difficultyLabel) && (
           <div style={{ fontSize: 11, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, marginBottom: 18, fontWeight: 600 }}>
             {modeLabel}{modeLabel && difficultyLabel ? " · " : ""}{difficultyLabel}
