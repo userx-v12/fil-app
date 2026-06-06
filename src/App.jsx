@@ -57,6 +57,8 @@ const DEFAULT_PREFS = {
 
 const RED = "#dc2626";
 
+const ACTOR_FILMO_LIMIT = 200;
+
 function categorizeDifficulty(optimalSteps) {
   if (optimalSteps === null || optimalSteps === undefined) return null;
   if (optimalSteps <= 3) return "easy";
@@ -166,7 +168,7 @@ async function getMovieCast(movieId, limit = 20) {
   return cast;
 }
 
-async function getActorMovies(actorId, excludeMovieId = null, limit = 30) {
+async function getActorMovies(actorId, excludeMovieId = null, limit = ACTOR_FILMO_LIMIT) {
   const cached = getCachedFilmo(actorId);
   if (cached) return cached.filter(m => m && m.id !== excludeMovieId).slice(0, limit);
   const { data, error } = await supabase
@@ -174,7 +176,7 @@ async function getActorMovies(actorId, excludeMovieId = null, limit = 30) {
     .select("movies!inner(id, title, year, poster_path, popularity, type)")
     .eq("actor_id", actorId)
     .order("popularity", { foreignTable: "movies", ascending: false })
-    .limit(50);
+    .limit(ACTOR_FILMO_LIMIT);
   if (error) throw error;
   const all = data.map(r => r.movies).filter(Boolean);
   setCachedFilmo(actorId, all);
@@ -217,7 +219,7 @@ async function getActorMoviesBatch(actorIds) {
       grouped.get(r.actor_id).push(r.movies);
     }
     for (const id of missing) {
-      setCachedFilmo(id, (grouped.get(id) || []).filter(Boolean).slice(0, 50));
+      setCachedFilmo(id, (grouped.get(id) || []).filter(Boolean).slice(0, ACTOR_FILMO_LIMIT));
     }
   }
   return actorIds.map(id => ({ actorId: id, movies: getCachedFilmo(id) || [] }));
@@ -249,7 +251,6 @@ async function getCandidatePool(prefs, limit = 500) {
     q = q.in("original_language", prefs.languages);
   }
 
-  // Filtres époque (multi-sélection)
   if (prefs.eras?.length > 0) {
     const orConditions = prefs.eras
       .map(eraKey => ERAS[eraKey])
@@ -594,7 +595,7 @@ function AccountIcon({ color }) {
 }
 
 // =========================================================================
-// INFO MODAL (Comment jouer)
+// INFO MODAL (Comment jouer) - sans effet shimmer, texte simple
 // =========================================================================
 
 function InfoModal({ onClose, themeColors, glass, glassDark }) {
@@ -608,25 +609,6 @@ function InfoModal({ onClose, themeColors, glass, glassDark }) {
       <style>{`
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
         @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes shimmer {
-          0%   { background-position: -200% center; }
-          100% { background-position: 200% center; }
-        }
-        .shimmer-text {
-          background: linear-gradient(
-            90deg,
-            currentColor 0%,
-            currentColor 40%,
-            rgba(255,255,255,0.95) 50%,
-            currentColor 60%,
-            currentColor 100%
-          );
-          background-size: 200% auto;
-          -webkit-background-clip: text;
-          background-clip: text;
-          -webkit-text-fill-color: transparent;
-          animation: shimmer 4s linear infinite;
-        }
         .example-row::-webkit-scrollbar { display: none; }
       `}</style>
       <div onClick={(e) => e.stopPropagation()}
@@ -708,8 +690,7 @@ function ExampleNode({ label, type, color, highlight }) {
                : highlight === "end"   ? "1px solid rgba(34,197,94,0.5)"
                : isMovie ? "1px solid rgba(255,255,255,0.12)" : "none";
   return (
-    <span className="shimmer-text"
-      style={{ fontSize: isMovie ? 11 : 10, fontWeight: isMovie ? 700 : 500,
+    <span style={{ fontSize: isMovie ? 11 : 10, fontWeight: isMovie ? 700 : 500,
         color, padding: "5px 9px", borderRadius: 999,
         background: bg, border,
         whiteSpace: "nowrap", letterSpacing: -0.2,
@@ -1017,7 +998,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
 }
 
 // =========================================================================
-// OPTIONS SCREEN (avec filtres époque multi-sélection)
+// OPTIONS SCREEN
 // =========================================================================
 
 function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
@@ -1065,7 +1046,6 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
         <h2 style={{ fontWeight: 800, fontSize: 36, margin: 0, letterSpacing: -1.5, lineHeight: 1, color: C.ink }}>Réglages</h2>
       </div>
 
-      {/* Filtres époque (multi-sélection) */}
       <div style={{ marginBottom: 28 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
           <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Époques</div>
@@ -1096,7 +1076,6 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
         </div>
       </div>
 
-      {/* Langues */}
       <div style={{ marginBottom: 28 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
           <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Langues acceptées</div>
@@ -1120,7 +1099,6 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
         </div>
       </div>
 
-      {/* Genres */}
       <div style={{ marginBottom: 28 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
           <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Genres exclus du tirage</div>
@@ -1223,7 +1201,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, themeColors, g
     let cancelled = false;
     setLoadingFilmo(true);
     setFilmoOfActor(null);
-    getActorMovies(selectedActor.id, currentMovie.id, 30).then(movies => {
+    getActorMovies(selectedActor.id, currentMovie.id, ACTOR_FILMO_LIMIT).then(movies => {
       if (!cancelled) { setFilmoOfActor(movies); setLoadingFilmo(false); }
     }).catch(e => { console.error(e); setLoadingFilmo(false); });
     return () => { cancelled = true; };
