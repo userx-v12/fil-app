@@ -39,13 +39,12 @@ const MODES = {
 };
 
 const ERAS = {
-  all:    { label: "Toutes les époques", year: null },
-  e2020:  { label: "Depuis 2020",        year: 2020 },
-  e2010:  { label: "Depuis 2010",        year: 2010 },
-  e2000:  { label: "Depuis 2000",        year: 2000 },
-  e1990:  { label: "Depuis 1990",        year: 1990 },
-  e1980:  { label: "Depuis 1980",        year: 1980 },
-  before1980: { label: "Avant 1980",     year: null, maxYear: 1980 },
+  e2020:      { label: "2020s",      minYear: 2020, maxYear: 2029 },
+  e2010:      { label: "2010s",      minYear: 2010, maxYear: 2019 },
+  e2000:      { label: "2000s",      minYear: 2000, maxYear: 2009 },
+  e1990:      { label: "1990s",      minYear: 1990, maxYear: 1999 },
+  e1980:      { label: "1980s",      minYear: 1980, maxYear: 1989 },
+  before1980: { label: "Avant 1980", minYear: 0,    maxYear: 1979 },
 };
 
 const DEFAULT_PREFS = {
@@ -53,7 +52,7 @@ const DEFAULT_PREFS = {
   difficulty: "random",
   languages: ["en", "fr"],
   excludeGenres: [16, 99],
-  era: "all",
+  eras: [],
 };
 
 const RED = "#dc2626";
@@ -80,7 +79,7 @@ const setCachedFilmo = (aid, m) => filmoCache.set(aid, m);
 // LOCAL STORAGE
 // =========================================================================
 
-const LS_PREFS = "fil-prefs-v5";
+const LS_PREFS = "fil-prefs-v6";
 const LS_THEME = "fil-theme";
 const LS_GAMES_PLAYED = "fil-games-played";
 const LS_INFO_SEEN = "fil-info-seen";
@@ -250,10 +249,15 @@ async function getCandidatePool(prefs, limit = 500) {
     q = q.in("original_language", prefs.languages);
   }
 
-  // Filtres époque
-  const eraConfig = ERAS[prefs.era] || ERAS.all;
-  if (eraConfig.year) q = q.gte("year", eraConfig.year);
-  if (eraConfig.maxYear) q = q.lt("year", eraConfig.maxYear);
+  // Filtres époque (multi-sélection)
+  if (prefs.eras?.length > 0) {
+    const orConditions = prefs.eras
+      .map(eraKey => ERAS[eraKey])
+      .filter(Boolean)
+      .map(e => `and(year.gte.${e.minYear},year.lte.${e.maxYear})`)
+      .join(",");
+    if (orConditions) q = q.or(orConditions);
+  }
 
   const { data, error } = await q;
   if (error) throw error;
@@ -423,7 +427,7 @@ const gradientFor = (id) => GRADIENT_PALETTE[hashId(id) % GRADIENT_PALETTE.lengt
 const isTv = (m) => m && m.type === "tv";
 
 // =========================================================================
-// IMAGES (Poster, ActorPhoto, TvLabel, Logo, LogoMark, Spinner)
+// IMAGES
 // =========================================================================
 
 function Poster({ movie, size = 60, rounded = 10, highlight = false, highlightColor, themeColors }) {
@@ -604,18 +608,26 @@ function InfoModal({ onClose, themeColors, glass, glassDark }) {
       <style>{`
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
         @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes flowExample {
-          0%, 100% { opacity: 0.4; }
-          50% { opacity: 1; }
+        @keyframes shimmer {
+          0%   { background-position: -200% center; }
+          100% { background-position: 200% center; }
         }
-        .flow-node {
-          animation: flowExample 3s ease-in-out infinite;
+        .shimmer-text {
+          background: linear-gradient(
+            90deg,
+            currentColor 0%,
+            currentColor 40%,
+            rgba(255,255,255,0.95) 50%,
+            currentColor 60%,
+            currentColor 100%
+          );
+          background-size: 200% auto;
+          -webkit-background-clip: text;
+          background-clip: text;
+          -webkit-text-fill-color: transparent;
+          animation: shimmer 4s linear infinite;
         }
-        .flow-node-1 { animation-delay: 0s; }
-        .flow-node-2 { animation-delay: 0.5s; }
-        .flow-node-3 { animation-delay: 1s; }
-        .flow-node-4 { animation-delay: 1.5s; }
-        .flow-node-5 { animation-delay: 2s; }
+        .example-row::-webkit-scrollbar { display: none; }
       `}</style>
       <div onClick={(e) => e.stopPropagation()}
         style={{ ...glass, borderRadius: 24, padding: "28px 24px",
@@ -644,21 +656,21 @@ function InfoModal({ onClose, themeColors, glass, glassDark }) {
           Ton but : aller de l'un à l'autre en passant par <strong>les acteurs qu'ils ont en commun</strong> avec d'autres films.
         </p>
 
-        {/* Exemple visuel animé */}
         <div style={{ background: C.cardBg, borderRadius: 16, padding: "16px 12px", marginBottom: 22,
           border: `1px solid ${C.hairline}` }}>
           <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase",
             color: C.inkMute, marginBottom: 12, textAlign: "center", fontWeight: 600 }}>Exemple</div>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4, flexWrap: "wrap" }}>
-            <ExampleNode label="Interstellar" type="movie" className="flow-node flow-node-1" color={C.ink} />
+          <div className="example-row" style={{ display: "flex", alignItems: "center", justifyContent: "center",
+            gap: 4, flexWrap: "nowrap", overflowX: "auto", paddingBottom: 2 }}>
+            <ExampleNode label="Titanic" type="movie" color="#6366f1" highlight="start" />
             <ExampleArrow color={C.inkMute} />
-            <ExampleNode label="McConaughey" type="actor" className="flow-node flow-node-2" color={C.inkSoft} />
+            <ExampleNode label="DiCaprio" type="actor" color={C.inkSoft} />
             <ExampleArrow color={C.inkMute} />
-            <ExampleNode label="Dallas Buyers Club" type="movie" className="flow-node flow-node-3" color={C.ink} />
+            <ExampleNode label="Inception" type="movie" color={C.ink} />
             <ExampleArrow color={C.inkMute} />
-            <ExampleNode label="Jared Leto" type="actor" className="flow-node flow-node-4" color={C.inkSoft} />
+            <ExampleNode label="Hardy" type="actor" color={C.inkSoft} />
             <ExampleArrow color={C.inkMute} />
-            <ExampleNode label="Fight Club" type="movie" className="flow-node flow-node-5" color={C.ink} />
+            <ExampleNode label="Mad Max" type="movie" color={C.green} highlight="end" />
           </div>
         </div>
 
@@ -687,20 +699,28 @@ function InfoModal({ onClose, themeColors, glass, glassDark }) {
   );
 }
 
-function ExampleNode({ label, type, className, color }) {
+function ExampleNode({ label, type, color, highlight }) {
   const isMovie = type === "movie";
+  const bg = highlight === "start" ? "rgba(99,102,241,0.15)"
+           : highlight === "end"   ? "rgba(34,197,94,0.15)"
+           : isMovie ? "rgba(255,255,255,0.08)" : "transparent";
+  const border = highlight === "start" ? "1px solid rgba(99,102,241,0.5)"
+               : highlight === "end"   ? "1px solid rgba(34,197,94,0.5)"
+               : isMovie ? "1px solid rgba(255,255,255,0.12)" : "none";
   return (
-    <span className={className}
+    <span className="shimmer-text"
       style={{ fontSize: isMovie ? 11 : 10, fontWeight: isMovie ? 700 : 500,
         color, padding: "5px 9px", borderRadius: 999,
-        background: isMovie ? "rgba(255,255,255,0.08)" : "transparent",
-        border: isMovie ? "1px solid rgba(255,255,255,0.12)" : "none",
-        whiteSpace: "nowrap", letterSpacing: -0.2 }}>{label}</span>
+        background: bg, border,
+        whiteSpace: "nowrap", letterSpacing: -0.2,
+        flexShrink: 0 }}>{label}</span>
   );
 }
+
 function ExampleArrow({ color }) {
-  return <span style={{ color, fontSize: 11, fontWeight: 600 }}>→</span>;
+  return <span style={{ color, fontSize: 11, fontWeight: 600, flexShrink: 0 }}>→</span>;
 }
+
 function Rule({ num, text, C }) {
   return (
     <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
@@ -737,7 +757,6 @@ export default function App() {
   useEffect(() => { savePrefs(prefs); }, [prefs]);
   useEffect(() => { document.body.style.background = C.bg; saveTheme(theme); }, [theme, C.bg]);
 
-  // 1er lancement : afficher la modal info automatiquement
   useEffect(() => {
     if (!loadInfoSeen()) {
       setShowInfo(true);
@@ -998,7 +1017,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
 }
 
 // =========================================================================
-// OPTIONS SCREEN (avec filtres époque)
+// OPTIONS SCREEN (avec filtres époque multi-sélection)
 // =========================================================================
 
 function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
@@ -1024,9 +1043,15 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
       return { ...p, excludeGenres: has ? p.excludeGenres.filter(g => Number(g) !== n) : [...p.excludeGenres, n] };
     });
   }
-  function setEra(eraKey) { setPrefs(p => ({ ...p, era: eraKey })); }
+  function toggleEra(key) {
+    setPrefs(p => {
+      const current = p.eras || [];
+      const has = current.includes(key);
+      return { ...p, eras: has ? current.filter(k => k !== key) : [...current, key] };
+    });
+  }
   function resetDefaults() {
-    setPrefs(p => ({ ...p, languages: ["en", "fr"], excludeGenres: [16, 99], era: "all" }));
+    setPrefs(p => ({ ...p, languages: ["en", "fr"], excludeGenres: [16, 99], eras: [] }));
   }
 
   return (
@@ -1040,14 +1065,22 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
         <h2 style={{ fontWeight: 800, fontSize: 36, margin: 0, letterSpacing: -1.5, lineHeight: 1, color: C.ink }}>Réglages</h2>
       </div>
 
-      {/* Filtres époque */}
+      {/* Filtres époque (multi-sélection) */}
       <div style={{ marginBottom: 28 }}>
-        <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 12 }}>Époque</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Époques</div>
+          {prefs.eras?.length > 0 && (
+            <button onClick={() => setPrefs(p => ({ ...p, eras: [] }))}
+              style={{ background: "none", border: "none", color: C.ink, fontFamily: "inherit",
+                fontSize: 10, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
+                cursor: "pointer", opacity: 0.75 }}>Tout décocher</button>
+          )}
+        </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
           {Object.entries(ERAS).map(([key, e]) => {
-            const active = prefs.era === key;
+            const active = (prefs.eras || []).includes(key);
             return (
-              <button key={key} onClick={() => setEra(key)}
+              <button key={key} onClick={() => toggleEra(key)}
                 style={{ padding: "8px 14px", borderRadius: 999,
                   border: `1px solid ${active ? C.ink : C.hairline}`,
                   background: active ? C.ink : C.cardBg, color: active ? C.bg : C.ink,
@@ -1057,7 +1090,9 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
           })}
         </div>
         <div style={{ fontSize: 11, color: C.inkMute, marginTop: 10, fontWeight: 500, lineHeight: 1.4 }}>
-          Filtre la sélection des films de départ et d'arrivée selon leur année.
+          {(prefs.eras || []).length === 0
+            ? "Aucun filtre actif : toutes les époques sont incluses."
+            : "Films et séries des époques sélectionnées uniquement."}
         </div>
       </div>
 
@@ -1125,7 +1160,7 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
 }
 
 // =========================================================================
-// GAME (identique à v5.0)
+// GAME
 // =========================================================================
 
 function Game({ challenge, onExit, onReplay, onRetry, onFinished, themeColors, glass, glassDark, theme }) {
