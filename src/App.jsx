@@ -595,7 +595,7 @@ function AccountIcon({ color }) {
 }
 
 // =========================================================================
-// INFO MODAL (Comment jouer) - sans effet shimmer, texte simple
+// INFO MODAL (Comment jouer) - exemple sur 1 ligne, texte petit
 // =========================================================================
 
 function InfoModal({ onClose, themeColors, glass, glassDark }) {
@@ -609,7 +609,6 @@ function InfoModal({ onClose, themeColors, glass, glassDark }) {
       <style>{`
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
         @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
-        .example-row::-webkit-scrollbar { display: none; }
       `}</style>
       <div onClick={(e) => e.stopPropagation()}
         style={{ ...glass, borderRadius: 24, padding: "28px 24px",
@@ -642,8 +641,8 @@ function InfoModal({ onClose, themeColors, glass, glassDark }) {
           border: `1px solid ${C.hairline}` }}>
           <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase",
             color: C.inkMute, marginBottom: 12, textAlign: "center", fontWeight: 600 }}>Exemple</div>
-          <div className="example-row" style={{ display: "flex", alignItems: "center", justifyContent: "center",
-            gap: 4, flexWrap: "nowrap", overflowX: "auto", paddingBottom: 2 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center",
+            gap: 3, flexWrap: "nowrap" }}>
             <ExampleNode label="Titanic" type="movie" color="#6366f1" highlight="start" />
             <ExampleArrow color={C.inkMute} />
             <ExampleNode label="DiCaprio" type="actor" color={C.inkSoft} />
@@ -690,8 +689,8 @@ function ExampleNode({ label, type, color, highlight }) {
                : highlight === "end"   ? "1px solid rgba(34,197,94,0.5)"
                : isMovie ? "1px solid rgba(255,255,255,0.12)" : "none";
   return (
-    <span style={{ fontSize: isMovie ? 11 : 10, fontWeight: isMovie ? 700 : 500,
-        color, padding: "5px 9px", borderRadius: 999,
+    <span style={{ fontSize: isMovie ? 9 : 8, fontWeight: isMovie ? 700 : 500,
+        color, padding: "4px 7px", borderRadius: 999,
         background: bg, border,
         whiteSpace: "nowrap", letterSpacing: -0.2,
         flexShrink: 0 }}>{label}</span>
@@ -699,7 +698,7 @@ function ExampleNode({ label, type, color, highlight }) {
 }
 
 function ExampleArrow({ color }) {
-  return <span style={{ color, fontSize: 11, fontWeight: 600, flexShrink: 0 }}>→</span>;
+  return <span style={{ color, fontSize: 9, fontWeight: 600, flexShrink: 0 }}>→</span>;
 }
 
 function Rule({ num, text, C }) {
