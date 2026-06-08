@@ -53,6 +53,7 @@ const DEFAULT_PREFS = {
   languages: ["en", "fr"],
   excludeGenres: [16, 99],
   eras: [],
+  minRating: 0,
 };
 
 const RED = "#dc2626";
@@ -282,6 +283,9 @@ async function getCandidatePool(prefs, limit = 500) {
   if (modeTypes.length === 1) q = q.eq("type", modeTypes[0]);
   if (prefs.languages?.length && prefs.languages.length < Object.keys(LANGUAGES).length) {
     q = q.in("original_language", prefs.languages);
+  }
+  if (prefs.minRating && prefs.minRating > 0) {
+    q = q.gte("vote_average", prefs.minRating);
   }
 
   if (prefs.eras?.length > 0) {
@@ -1037,7 +1041,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.4</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.5</div>
     </div>
   );
 }
@@ -1077,7 +1081,7 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
     });
   }
   function resetDefaults() {
-    setPrefs(p => ({ ...p, languages: ["en", "fr"], excludeGenres: [16, 99], eras: [] }));
+    setPrefs(p => ({ ...p, languages: ["en", "fr"], excludeGenres: [16, 99], eras: [], minRating: 0 }));
   }
 
   return (
@@ -1118,6 +1122,71 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
           {(prefs.eras || []).length === 0
             ? "Aucun filtre actif : toutes les époques sont incluses."
             : "Films et séries des époques sélectionnées uniquement."}
+        </div>
+      </div>
+
+      <div style={{ marginBottom: 28 }}>
+        <style>{`
+          .rating-slider {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: ${C.hairline};
+            outline: none;
+            margin: 14px 0 6px;
+            cursor: pointer;
+          }
+          .rating-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: ${C.ink};
+            cursor: pointer;
+            border: 2px solid ${C.bg};
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+            transition: transform .15s;
+          }
+          .rating-slider::-webkit-slider-thumb:hover {
+            transform: scale(1.15);
+          }
+          .rating-slider::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: ${C.ink};
+            cursor: pointer;
+            border: 2px solid ${C.bg};
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+          }
+        `}</style>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+          <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Note minimale TMDb</div>
+          {(prefs.minRating || 0) > 0 && (
+            <button onClick={() => setPrefs(p => ({ ...p, minRating: 0 }))}
+              style={{ background: "none", border: "none", color: C.ink, fontFamily: "inherit",
+                fontSize: 10, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
+                cursor: "pointer", opacity: 0.75 }}>Désactiver</button>
+          )}
+        </div>
+        <div style={{ fontSize: 22, fontWeight: 800, color: C.ink, letterSpacing: -0.8, marginTop: 8 }}>
+          {(prefs.minRating || 0) > 0 ? `≥ ${prefs.minRating.toFixed(1)}` : "Aucun filtre"}
+        </div>
+        <input type="range" min="0" max="9" step="0.5"
+          value={prefs.minRating || 0}
+          onChange={(e) => setPrefs(p => ({ ...p, minRating: parseFloat(e.target.value) }))}
+          className="rating-slider" />
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: C.inkMute, fontWeight: 600, letterSpacing: 1 }}>
+          <span>0</span>
+          <span>5</span>
+          <span>7</span>
+          <span>9</span>
+        </div>
+        <div style={{ fontSize: 11, color: C.inkMute, marginTop: 10, fontWeight: 500, lineHeight: 1.4 }}>
+          Ne tire que des œuvres dont la note moyenne TMDb dépasse ce seuil. Utile pour éviter les films oubliables.
         </div>
       </div>
 
@@ -1218,7 +1287,6 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, themeColors, g
     return () => clearInterval(id);
   }, [startTime, finished]);
 
-  // L'indice ne devient disponible qu'après 15s à chaque nouvelle étape, pour décourager son usage compulsif.
   useEffect(() => {
     setHintAvailable(false);
     const t = setTimeout(() => setHintAvailable(true), 15000);
@@ -1237,9 +1305,6 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, themeColors, g
     const t = setTimeout(() => setConfirmingAbandon(false), 3000);
     return () => clearTimeout(t);
   }, [confirmingAbandon]);
-
-  // L'indice s'éteint dès qu'on a fait notre prochain choix (changement de path ou ouverture/fermeture d'une filmo).
-  useEffect(() => { setHintActive(false); }, [path.length, selectedActor]);
 
   useEffect(() => {
     if (selectedActor) return;
@@ -1307,6 +1372,8 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, themeColors, g
 
   const noGreenAvailable = hintActive && !greenHint;
   const showBackInGreen = hintActive && noGreenAvailable && (path.length > 1 || selectedActor);
+
+  useEffect(() => { setHintActive(false); }, [path.length, selectedActor]);
 
   function pickActor(actor) { setClicks(c => c + 1); setSelectedActor(actor); }
   function pickMovie(movie) {
