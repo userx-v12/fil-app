@@ -66,14 +66,21 @@ function categorizeDifficulty(optimalSteps) {
   return "hard";
 }
 
+// Helper : clé composite "id:type" pour identifier une œuvre de façon unique
+const workKey = (w) => `${w.id}:${w.type}`;
+const parseWorkKey = (k) => {
+  const [id, type] = k.split(":");
+  return { id: parseInt(id, 10), type };
+};
+
 // =========================================================================
 // CACHE
 // =========================================================================
 
 const castCache = new Map();
 const filmoCache = new Map();
-const getCachedCast = (mid) => castCache.get(mid);
-const setCachedCast = (mid, c) => castCache.set(mid, c);
+const getCachedCast = (id, type) => castCache.get(`${id}:${type}`);
+const setCachedCast = (id, type, c) => castCache.set(`${id}:${type}`, c);
 const getCachedFilmo = (aid) => filmoCache.get(aid);
 const setCachedFilmo = (aid, m) => filmoCache.set(aid, m);
 
@@ -119,15 +126,27 @@ function getChallengeFromURL() {
     const params = new URLSearchParams(window.location.search);
     const c = params.get("challenge");
     if (!c) return null;
+    const m = c.match(/^(\d+)([mt])-(\d+)([mt])$/);
+    if (m) {
+      return {
+        startId: parseInt(m[1], 10),
+        startType: m[2] === "m" ? "movie" : "tv",
+        endId: parseInt(m[3], 10),
+        endType: m[4] === "m" ? "movie" : "tv",
+      };
+    }
     const [a, b] = c.split("-").map(Number);
     if (!a || !b || isNaN(a) || isNaN(b)) return null;
-    return { startId: a, endId: b };
+    return { startId: a, startType: "movie", endId: b, endType: "movie" };
   } catch { return null; }
 }
-function setChallengeInURL(s, e) {
+
+function setChallengeInURL(startWork, endWork) {
   try {
+    const sT = startWork.type === "tv" ? "t" : "m";
+    const eT = endWork.type === "tv" ? "t" : "m";
     const url = new URL(window.location.href);
-    url.searchParams.set("challenge", `${s}-${e}`);
+    url.searchParams.set("challenge", `${startWork.id}${sT}-${endWork.id}${eT}`);
     window.history.replaceState({}, "", url);
   } catch {}
 }
@@ -143,65 +162,78 @@ function clearChallengeFromURL() {
 // API
 // =========================================================================
 
-async function getMoviesByIds(ids) {
-  if (!ids?.length) return [];
+async function getWorksByPairs(pairs) {
+  if (!pairs?.length) return [];
+  const ids = [...new Set(pairs.map(p => p.id))];
   const { data, error } = await supabase
-    .from("movies")
-    .select("id, title, year, poster_path, popularity, type")
+    .from("works")
+    .select("id, type, title, year, poster_path, popularity")
     .in("id", ids);
   if (error) throw error;
-  return data || [];
+  const map = new Map((data || []).map(w => [`${w.id}:${w.type}`, w]));
+  return pairs.map(p => map.get(`${p.id}:${p.type}`));
 }
 
-async function getMovieCast(movieId, limit = 20) {
-  const cached = getCachedCast(movieId);
+async function getMovieCast(workId, workType, limit = 30) {
+  const cached = getCachedCast(workId, workType);
   if (cached) return cached.slice(0, limit);
   const { data, error } = await supabase
     .from("credits")
-    .select("ord, actors(id, name, profile_path)")
-    .eq("movie_id", movieId)
+    .select("ord, actors(id, name, profile_path, popularity)")
+    .eq("work_id", workId)
+    .eq("work_type", workType)
     .order("ord", { ascending: true, nullsFirst: false })
     .limit(limit);
   if (error) throw error;
   const cast = data.map(r => ({ ...r.actors, ord: r.ord }));
-  setCachedCast(movieId, cast);
+  setCachedCast(workId, workType, cast);
   return cast;
 }
 
-async function getActorMovies(actorId, excludeMovieId = null, limit = ACTOR_FILMO_LIMIT) {
+async function getActorMovies(actorId, excludeWorkId = null, excludeWorkType = null, limit = ACTOR_FILMO_LIMIT) {
   const cached = getCachedFilmo(actorId);
-  if (cached) return cached.filter(m => m && m.id !== excludeMovieId).slice(0, limit);
+  if (cached) return cached.filter(m => m && !(m.id === excludeWorkId && m.type === excludeWorkType)).slice(0, limit);
   const { data, error } = await supabase
     .from("credits")
-    .select("movies!inner(id, title, year, poster_path, popularity, type)")
+    .select("works!inner(id, type, title, year, poster_path, popularity)")
     .eq("actor_id", actorId)
-    .order("popularity", { foreignTable: "movies", ascending: false })
+    .order("popularity", { foreignTable: "works", ascending: false })
     .limit(ACTOR_FILMO_LIMIT);
   if (error) throw error;
-  const all = data.map(r => r.movies).filter(Boolean);
+  const all = data.map(r => r.works).filter(Boolean);
   setCachedFilmo(actorId, all);
-  return all.filter(m => m.id !== excludeMovieId).slice(0, limit);
+  return all.filter(m => !(m.id === excludeWorkId && m.type === excludeWorkType)).slice(0, limit);
 }
 
-async function getMovieCastsBatch(movieIds) {
-  const missing = movieIds.filter(id => !getCachedCast(id));
+async function getMovieCastsBatch(workPairs) {
+  const missing = workPairs.filter(p => !getCachedCast(p.id, p.type));
   if (missing.length > 0) {
+    const ids = [...new Set(missing.map(p => p.id))];
     const { data, error } = await supabase
       .from("credits")
-      .select("movie_id, ord, actors(id, name, profile_path)")
-      .in("movie_id", missing)
-      .order("ord", { ascending: true, nullsFirst: false });
+      .select("work_id, work_type, ord, actors(id, name, profile_path, popularity)")
+      .in("work_id", ids)
+      .order("ord", { ascending: true, nullsFirst: false })
+      .limit(50000);
     if (error) throw error;
+    const neededKeys = new Set(missing.map(p => `${p.id}:${p.type}`));
     const grouped = new Map();
     for (const r of (data || [])) {
-      if (!grouped.has(r.movie_id)) grouped.set(r.movie_id, []);
-      grouped.get(r.movie_id).push({ ...r.actors, ord: r.ord });
+      const key = `${r.work_id}:${r.work_type}`;
+      if (!neededKeys.has(key)) continue;
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key).push({ ...r.actors, ord: r.ord });
     }
-    for (const id of missing) {
-      setCachedCast(id, (grouped.get(id) || []).slice(0, 20));
+    for (const p of missing) {
+      const key = `${p.id}:${p.type}`;
+      setCachedCast(p.id, p.type, (grouped.get(key) || []).slice(0, 30));
     }
   }
-  return movieIds.map(id => ({ movieId: id, cast: getCachedCast(id) || [] }));
+  return workPairs.map(p => ({
+    workId: p.id,
+    workType: p.type,
+    cast: getCachedCast(p.id, p.type) || [],
+  }));
 }
 
 async function getActorMoviesBatch(actorIds) {
@@ -209,14 +241,15 @@ async function getActorMoviesBatch(actorIds) {
   if (missing.length > 0) {
     const { data, error } = await supabase
       .from("credits")
-      .select("actor_id, movies!inner(id, title, year, poster_path, popularity, type)")
+      .select("actor_id, works!inner(id, type, title, year, poster_path, popularity)")
       .in("actor_id", missing)
-      .order("popularity", { foreignTable: "movies", ascending: false });
+      .order("popularity", { foreignTable: "works", ascending: false })
+      .limit(50000);
     if (error) throw error;
     const grouped = new Map();
     for (const r of (data || [])) {
       if (!grouped.has(r.actor_id)) grouped.set(r.actor_id, []);
-      grouped.get(r.actor_id).push(r.movies);
+      grouped.get(r.actor_id).push(r.works);
     }
     for (const id of missing) {
       setCachedFilmo(id, (grouped.get(id) || []).filter(Boolean).slice(0, ACTOR_FILMO_LIMIT));
@@ -228,8 +261,8 @@ async function getActorMoviesBatch(actorIds) {
 async function searchMovies(query, limit = 20) {
   if (!query || query.trim().length < 2) return [];
   const { data, error } = await supabase
-    .from("movies")
-    .select("id, title, year, poster_path, popularity, type")
+    .from("works")
+    .select("id, type, title, year, poster_path, popularity")
     .ilike("title", `%${query.trim()}%`)
     .order("popularity", { ascending: false })
     .limit(limit);
@@ -239,8 +272,8 @@ async function searchMovies(query, limit = 20) {
 
 async function getCandidatePool(prefs, limit = 500) {
   let q = supabase
-    .from("movies")
-    .select("id, title, year, poster_path, popularity, original_language, genre_ids, type")
+    .from("works")
+    .select("id, type, title, year, poster_path, popularity, original_language, genre_ids")
     .gte("popularity", 20)
     .order("popularity", { ascending: false })
     .limit(limit);
@@ -282,7 +315,7 @@ async function pickRandomPair(prefs) {
   const a = pool[Math.floor(Math.random() * pool.length)];
   let b = pool[Math.floor(Math.random() * pool.length)];
   let safety = 10;
-  while (b.id === a.id && safety-- > 0) {
+  while ((b.id === a.id && b.type === a.type) && safety-- > 0) {
     b = pool[Math.floor(Math.random() * pool.length)];
   }
   return { start: a, end: b };
@@ -292,33 +325,37 @@ async function pickRandomPair(prefs) {
 // BFS
 // =========================================================================
 
-async function neighborsOfMoviesBatch(movieIds) {
-  const castsResult = await getMovieCastsBatch(movieIds);
+async function neighborsOfMoviesBatch(works) {
+  const castsResult = await getMovieCastsBatch(works);
   const allActorIds = new Set();
   for (const { cast } of castsResult) {
     for (const a of cast) allActorIds.add(a.id);
   }
   await getActorMoviesBatch(Array.from(allActorIds));
   const result = new Map();
-  for (const { movieId, cast } of castsResult) {
+  for (const { workId, workType, cast } of castsResult) {
     const neighbors = [];
     for (const a of cast) {
       const filmo = getCachedFilmo(a.id) || [];
       for (const m of filmo) {
-        if (m.id !== movieId) neighbors.push({ actor: a, movie: m });
+        if (m.id === workId && m.type === workType) continue;
+        neighbors.push({ actor: a, movie: m });
       }
     }
-    result.set(movieId, neighbors);
+    result.set(`${workId}:${workType}`, neighbors);
   }
   return result;
 }
 
-async function findOptimalPath(startId, endId, maxDepth = 4) {
-  if (startId === endId) return [{ type: "movie", id: startId }];
-  const fromStart = new Map([[startId, { actor: null, parent: null }]]);
-  const fromEnd   = new Map([[endId,   { actor: null, parent: null }]]);
-  let frontierStart = [startId];
-  let frontierEnd   = [endId];
+async function findOptimalPath(start, end, maxDepth = 4) {
+  const sKey = workKey(start);
+  const eKey = workKey(end);
+  if (sKey === eKey) return [{ type: "movie", data: { id: start.id, type: start.type } }];
+
+  const fromStart = new Map([[sKey, { actor: null, parent: null }]]);
+  const fromEnd   = new Map([[eKey, { actor: null, parent: null }]]);
+  let frontierStart = [start];
+  let frontierEnd   = [end];
 
   for (let depth = 0; depth < maxDepth; depth++) {
     const useStart = frontierStart.length <= frontierEnd.length;
@@ -327,14 +364,15 @@ async function findOptimalPath(startId, endId, maxDepth = 4) {
     const other    = useStart ? fromEnd : fromStart;
     const neighborsMap = await neighborsOfMoviesBatch(frontier);
     const nextFrontier = [];
-    for (const fromMovie of frontier) {
-      const neighbors = neighborsMap.get(fromMovie) || [];
+    for (const fromWork of frontier) {
+      const fromKey = workKey(fromWork);
+      const neighbors = neighborsMap.get(fromKey) || [];
       for (const { actor, movie } of neighbors) {
-        const mid = movie.id;
-        if (visited.has(mid)) continue;
-        visited.set(mid, { actor, parent: fromMovie });
-        if (other.has(mid)) return reconstruct(mid, fromStart, fromEnd);
-        nextFrontier.push(mid);
+        const mKey = workKey(movie);
+        if (visited.has(mKey)) continue;
+        visited.set(mKey, { actor, parent: fromKey });
+        if (other.has(mKey)) return reconstruct(mKey, fromStart, fromEnd);
+        nextFrontier.push(movie);
       }
     }
     if (useStart) frontierStart = nextFrontier; else frontierEnd = nextFrontier;
@@ -343,28 +381,28 @@ async function findOptimalPath(startId, endId, maxDepth = 4) {
   return null;
 }
 
-function reconstruct(meetId, fromStart, fromEnd) {
+function reconstruct(meetKey, fromStart, fromEnd) {
   const left = [];
-  let cur = meetId;
-  while (cur != null) {
-    const n = fromStart.get(cur);
+  let curKey = meetKey;
+  while (curKey != null) {
+    const n = fromStart.get(curKey);
     if (!n) break;
-    left.unshift({ type: "movie", id: cur });
+    left.unshift({ type: "movie", data: parseWorkKey(curKey) });
     if (n.actor) left.unshift({ type: "actor", data: n.actor });
-    cur = n.parent;
+    curKey = n.parent;
   }
   const right = [];
-  cur = meetId;
-  const node = fromEnd.get(cur);
+  curKey = meetKey;
+  const node = fromEnd.get(curKey);
   if (node && node.parent != null) {
-    let p = node.parent;
+    let pKey = node.parent;
     let a = node.actor;
-    while (p != null) {
+    while (pKey != null) {
       if (a) right.push({ type: "actor", data: a });
-      right.push({ type: "movie", id: p });
-      const next = fromEnd.get(p);
+      right.push({ type: "movie", data: parseWorkKey(pKey) });
+      const next = fromEnd.get(pKey);
       if (!next) break;
-      p = next.parent;
+      pKey = next.parent;
       a = next.actor;
     }
   }
@@ -380,7 +418,8 @@ const THEMES = {
     name: "light", bg: "#fafafa", ink: "#0f1729",
     inkSoft: "rgba(15, 23, 41, 0.55)", inkMute: "rgba(15, 23, 41, 0.35)",
     hairline: "rgba(15, 23, 41, 0.08)", white: "#ffffff",
-    green: "#16a34a", amber: "#a16207", orange: "#ea580c",
+    green: "#16a34a", greenSoft: "#84cc16",
+    amber: "#a16207", orange: "#ea580c",
     yellow: "#eab308",
     glassBg: "rgba(255, 255, 255, 0.65)", glassDarkBg: "#0f1729", glassDarkInk: "#ffffff",
     radialA: "rgba(15,23,41,0.06)", radialB: "rgba(15,23,41,0.05)",
@@ -392,7 +431,8 @@ const THEMES = {
     name: "dark", bg: "#0a0e18", ink: "#fafafa",
     inkSoft: "rgba(250, 250, 250, 0.65)", inkMute: "rgba(250, 250, 250, 0.40)",
     hairline: "rgba(250, 250, 250, 0.10)", white: "#0f1729",
-    green: "#22c55e", amber: "#d97706", orange: "#f97316",
+    green: "#22c55e", greenSoft: "#a3e635",
+    amber: "#d97706", orange: "#f97316",
     yellow: "#facc15",
     glassBg: "rgba(30, 38, 58, 0.55)", glassDarkBg: "#fafafa", glassDarkInk: "#0f1729",
     radialA: "rgba(99, 102, 241, 0.08)", radialB: "rgba(244, 114, 182, 0.06)",
@@ -595,7 +635,7 @@ function AccountIcon({ color }) {
 }
 
 // =========================================================================
-// INFO MODAL (Comment jouer) - exemple sur 1 ligne, texte petit
+// INFO MODAL
 // =========================================================================
 
 function InfoModal({ onClose, themeColors, glass, glassDark }) {
@@ -746,26 +786,30 @@ export default function App() {
 
   useEffect(() => {
     const urlChallenge = getChallengeFromURL();
-    if (urlChallenge) loadChallengeFromURL(urlChallenge.startId, urlChallenge.endId);
+    if (urlChallenge) loadChallengeFromURL(urlChallenge);
   }, []);
 
   function toggleTheme() { setTheme(t => t === "light" ? "dark" : "light"); }
 
-  async function loadChallengeFromURL(startId, endId) {
+  async function loadChallengeFromURL(c) {
     setLoadingChallenge(true);
     setLoadingLabel("Chargement du défi partagé…");
     setError(null);
     try {
-      const movies = await getMoviesByIds([startId, endId]);
-      const start = movies.find(m => m.id === startId);
-      const end   = movies.find(m => m.id === endId);
+      const works = await getWorksByPairs([
+        { id: c.startId, type: c.startType },
+        { id: c.endId,   type: c.endType   },
+      ]);
+      const start = works[0];
+      const end   = works[1];
       if (!start || !end) throw new Error("Défi introuvable.");
       setChallenge({ start, end, optimal: null, optimalLoading: true, modeUsed: prefs.mode, difficultyUsed: prefs.difficulty });
       setGameKey(k => k + 1);
       setScreen("game");
-      findOptimalPath(start.id, end.id, 5).then(optimal => {
-        setChallenge(c => c && c.start.id === start.id && c.end.id === end.id
-          ? { ...c, optimal, optimalLoading: false } : c);
+      findOptimalPath(start, end, 5).then(optimal => {
+        setChallenge(c2 => c2 && c2.start.id === start.id && c2.start.type === start.type
+                              && c2.end.id === end.id && c2.end.type === end.type
+          ? { ...c2, optimal, optimalLoading: false } : c2);
       }).catch(() => {});
     } catch (e) {
       setError(e.message);
@@ -787,14 +831,15 @@ export default function App() {
       setScreen("game");
       setLoadingChallenge(false);
 
-      const optimal = await findOptimalPath(start.id, end.id, 5);
+      const optimal = await findOptimalPath(start, end, 5);
       if (!optimal || optimal.length < 3) {
         setError("Aucun chemin trouvé, on relance…");
         setScreen("menu");
         setTimeout(() => startRandom(), 100);
         return;
       }
-      setChallenge(c => c && c.start.id === start.id && c.end.id === end.id
+      setChallenge(c => c && c.start.id === start.id && c.start.type === start.type
+                          && c.end.id === end.id && c.end.type === end.type
         ? { ...c, optimal, optimalLoading: false } : c);
     } catch (e) {
       setError(e.message);
@@ -812,13 +857,14 @@ export default function App() {
       setGameKey(k => k + 1);
       setScreen("game");
       setLoadingChallenge(false);
-      const optimal = await findOptimalPath(startMovie.id, endMovie.id, 5);
+      const optimal = await findOptimalPath(startMovie, endMovie, 5);
       if (!optimal) {
         setError("Aucun chemin trouvé entre ces deux œuvres.");
         setScreen("menu");
         return;
       }
-      setChallenge(c => c && c.start.id === startMovie.id && c.end.id === endMovie.id
+      setChallenge(c => c && c.start.id === startMovie.id && c.start.type === startMovie.type
+                          && c.end.id === endMovie.id && c.end.type === endMovie.type
         ? { ...c, optimal, optimalLoading: false } : c);
     } catch (e) {
       setError(e.message);
@@ -991,7 +1037,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.1</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.4</div>
     </div>
   );
 }
@@ -1153,21 +1199,31 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, themeColors, g
   const [clicks, setClicks] = useState(0);
   const [hintsUsed, setHintsUsed] = useState(0);
   const [hintActive, setHintActive] = useState(false);
+  const [hintAvailable, setHintAvailable] = useState(false);
   const [finished, setFinished] = useState(false);
   const [abandoned, setAbandoned] = useState(false);
   const [confirmingAbandon, setConfirmingAbandon] = useState(false);
   const [filmoSort, setFilmoSort] = useState("popularity");
+  const [castSort, setCastSort] = useState("popularity");
 
   const currentMovie = path[path.length - 1].data;
-  const isAtEnd = currentMovie.id === challenge.end.id;
+  const isAtEnd = currentMovie.id === challenge.end.id && currentMovie.type === challenge.end.type;
 
-  useEffect(() => { setChallengeInURL(challenge.start.id, challenge.end.id); }, [challenge.start.id, challenge.end.id]);
+  useEffect(() => { setChallengeInURL(challenge.start, challenge.end); },
+    [challenge.start.id, challenge.start.type, challenge.end.id, challenge.end.type]);
 
   useEffect(() => {
     if (finished) return;
     const id = setInterval(() => setElapsed(Date.now() - startTime), 100);
     return () => clearInterval(id);
   }, [startTime, finished]);
+
+  // L'indice ne devient disponible qu'après 15s à chaque nouvelle étape, pour décourager son usage compulsif.
+  useEffect(() => {
+    setHintAvailable(false);
+    const t = setTimeout(() => setHintAvailable(true), 15000);
+    return () => clearTimeout(t);
+  }, [path.length, selectedActor]);
 
   useEffect(() => {
     if (isAtEnd && !finished) {
@@ -1182,6 +1238,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, themeColors, g
     return () => clearTimeout(t);
   }, [confirmingAbandon]);
 
+  // L'indice s'éteint dès qu'on a fait notre prochain choix (changement de path ou ouverture/fermeture d'une filmo).
   useEffect(() => { setHintActive(false); }, [path.length, selectedActor]);
 
   useEffect(() => {
@@ -1189,32 +1246,49 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, themeColors, g
     let cancelled = false;
     setLoadingCast(true);
     setCastOfCurrent(null);
-    getMovieCast(currentMovie.id, 20).then(cast => {
+    getMovieCast(currentMovie.id, currentMovie.type, 30).then(cast => {
       if (!cancelled) { setCastOfCurrent(cast); setLoadingCast(false); }
     }).catch(e => { console.error(e); setLoadingCast(false); });
     return () => { cancelled = true; };
-  }, [currentMovie.id, selectedActor]);
+  }, [currentMovie.id, currentMovie.type, selectedActor]);
 
   useEffect(() => {
     if (!selectedActor) return;
     let cancelled = false;
     setLoadingFilmo(true);
     setFilmoOfActor(null);
-    getActorMovies(selectedActor.id, currentMovie.id, ACTOR_FILMO_LIMIT).then(movies => {
-      if (!cancelled) { setFilmoOfActor(movies); setLoadingFilmo(false); }
-    }).catch(e => { console.error(e); setLoadingFilmo(false); });
+    getActorMovies(selectedActor.id, currentMovie.id, currentMovie.type, ACTOR_FILMO_LIMIT)
+      .then(movies => {
+        if (cancelled) return;
+        setFilmoOfActor(movies || []);
+        setLoadingFilmo(false);
+      })
+      .catch(e => {
+        if (cancelled) return;
+        console.error("Filmo error:", e);
+        setFilmoOfActor([]);
+        setLoadingFilmo(false);
+      });
     return () => { cancelled = true; };
-  }, [selectedActor, currentMovie.id]);
+  }, [selectedActor, currentMovie.id, currentMovie.type]);
 
   const playerSteps = Math.max(0, Math.floor((path.length - 1) / 2));
   const formatTime = (ms) => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
 
-  const visitedMovieIds = useMemo(() => new Set(path.filter(n => n.type === "movie").map(n => n.data.id)), [path]);
-  const visitedActorIds = useMemo(() => new Set(path.filter(n => n.type === "actor").map(n => n.data.id)), [path]);
+  const visitedMovieKeys = useMemo(
+    () => new Set(path.filter(n => n.type === "movie").map(n => workKey(n.data))),
+    [path]
+  );
+  const visitedActorIds = useMemo(
+    () => new Set(path.filter(n => n.type === "actor").map(n => n.data.id)),
+    [path]
+  );
 
   const greenHint = useMemo(() => {
     if (!challenge.optimal || challenge.optimal.length < 2) return null;
-    const idx = challenge.optimal.findIndex(n => n.type === "movie" && n.id === currentMovie.id);
+    const idx = challenge.optimal.findIndex(
+      n => n.type === "movie" && n.data.id === currentMovie.id && n.data.type === currentMovie.type
+    );
     if (idx === -1) return null;
     if (!selectedActor) {
       const next = challenge.optimal[idx + 1];
@@ -1223,11 +1297,13 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, themeColors, g
       const optimalActor = challenge.optimal[idx + 1];
       if (optimalActor && optimalActor.type === "actor" && optimalActor.data.id === selectedActor.id) {
         const nextMovie = challenge.optimal[idx + 2];
-        if (nextMovie && nextMovie.type === "movie") return { kind: "movie", id: nextMovie.id };
+        if (nextMovie && nextMovie.type === "movie") {
+          return { kind: "movie", id: nextMovie.data.id, workType: nextMovie.data.type };
+        }
       }
     }
     return null;
-  }, [challenge.optimal, currentMovie.id, selectedActor]);
+  }, [challenge.optimal, currentMovie.id, currentMovie.type, selectedActor]);
 
   const noGreenAvailable = hintActive && !greenHint;
   const showBackInGreen = hintActive && noGreenAvailable && (path.length > 1 || selectedActor);
@@ -1264,7 +1340,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, themeColors, g
           formatTime={formatTime} playerSteps={playerSteps} abandoned={abandoned} hintsUsed={hintsUsed}
           onReplay={onReplay} onRetry={onRetry} onMenu={onExit}
           themeColors={C} glass={glass} glassDark={glassDark}
-          startId={challenge.start.id} endId={challenge.end.id}
+          startWork={challenge.start} endWork={challenge.end}
           modeUsed={challenge.modeUsed} difficultyUsed={challenge.difficultyUsed} />
       </GameShell>
     );
@@ -1289,13 +1365,15 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, themeColors, g
           castOfCurrent && <ActorPicker title={`Casting · ${currentMovie.title}`} actors={castOfCurrent} onPick={pickActor}
             greenId={hintActive && greenHint?.kind === "actor" ? greenHint.id : null}
             yellowIds={hintActive ? visitedActorIds : null}
+            sort={castSort}
+            onToggleSort={() => setCastSort(s => s === "popularity" ? "ord" : "popularity")}
             themeColors={C} glass={glass} />
         ) : (
           loadingFilmo ? <Spinner label={`Filmographie de ${selectedActor.name}`} themeColors={C} /> :
           filmoOfActor && <MoviePicker title={`Filmographie · ${selectedActor.name}`}
-            movies={filmoOfActor} targetId={challenge.end.id} onPick={pickMovie}
-            greenId={hintActive && greenHint?.kind === "movie" ? greenHint.id : null}
-            yellowIds={hintActive ? visitedMovieIds : null}
+            movies={filmoOfActor} targetWork={challenge.end} onPick={pickMovie}
+            greenWork={hintActive && greenHint?.kind === "movie" ? { id: greenHint.id, type: greenHint.workType } : null}
+            yellowKeys={hintActive ? visitedMovieKeys : null}
             sort={filmoSort} onToggleSort={() => setFilmoSort(s => s === "popularity" ? "date" : "popularity")}
             onClose={() => { setClicks(c => c + 1); setSelectedActor(null); setFilmoOfActor(null); }}
             themeColors={C} glass={glass} />
@@ -1335,12 +1413,13 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, themeColors, g
           )}
         </div>
 
-        <button onClick={useHint} disabled={hintActive || challenge.optimalLoading}
-          title={challenge.optimalLoading ? "En cours…" : "Indice"}
+        <button onClick={useHint} disabled={hintActive || challenge.optimalLoading || !hintAvailable}
+          title={challenge.optimalLoading ? "En cours…" : !hintAvailable ? "Disponible dans quelques secondes…" : "Indice"}
           style={{ ...iconBtn(C),
             background: hintActive ? C.green : C.iconBtnBg,
             color: hintActive ? "#fff" : C.ink,
-            opacity: challenge.optimalLoading ? 0.5 : 1 }}>
+            opacity: (challenge.optimalLoading || !hintAvailable) ? 0.35 : 1,
+            cursor: (challenge.optimalLoading || !hintAvailable) ? "not-allowed" : "pointer" }}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.5V17h8v-2.5A7 7 0 0 0 12 2z"/>
           </svg>
@@ -1443,15 +1522,38 @@ function Trail({ path, themeColors, glass }) {
   );
 }
 
-function ActorPicker({ title, actors, onPick, greenId, yellowIds, themeColors, glass }) {
+function ActorPicker({ title, actors, onPick, greenId, yellowIds, sort, onToggleSort, themeColors, glass }) {
   const C = themeColors;
+  const sorted = useMemo(() => {
+    const copy = [...actors];
+    if (sort === "ord") {
+      copy.sort((a, b) => (a.ord ?? 999) - (b.ord ?? 999));
+    } else {
+      copy.sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
+    }
+    return copy;
+  }, [actors, sort]);
+
   return (
     <div style={{ ...glass, borderRadius: 20, padding: 12 }}>
-      <div style={{ padding: "4px 6px 12px" }}>
-        <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, fontWeight: 600 }}>{title}</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 6px 12px", gap: 10 }}>
+        <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, fontWeight: 600, flex: 1, minWidth: 0,
+          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{title}</div>
+        {onToggleSort && (
+          <button onClick={onToggleSort}
+            style={{ background: "none", border: "none", color: C.inkSoft, fontFamily: "inherit",
+              fontSize: 10, fontWeight: 600, letterSpacing: 0.8, textTransform: "uppercase",
+              cursor: "pointer", display: "flex", alignItems: "center", gap: 4, opacity: 0.7, padding: 0 }}>
+            Trier · {sort === "ord" ? "Rôle" : "Popularité"}
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="8 9 12 5 16 9"/>
+              <polyline points="16 15 12 19 8 15"/>
+            </svg>
+          </button>
+        )}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
-        {actors.map(a => {
+        {sorted.map(a => {
           const isGreen = greenId && a.id === greenId;
           const isYellow = !isGreen && yellowIds && yellowIds.has(a.id);
           const hColor = isGreen ? C.green : isYellow ? C.yellow : null;
@@ -1475,7 +1577,7 @@ function ActorPicker({ title, actors, onPick, greenId, yellowIds, themeColors, g
   );
 }
 
-function MoviePicker({ title, movies, targetId, onPick, onClose, greenId, yellowIds, sort, onToggleSort, themeColors, glass }) {
+function MoviePicker({ title, movies, targetWork, onPick, onClose, greenWork, yellowKeys, sort, onToggleSort, themeColors, glass }) {
   const C = themeColors;
   const sorted = useMemo(() => {
     const copy = [...movies];
@@ -1509,13 +1611,13 @@ function MoviePicker({ title, movies, targetId, onPick, onClose, greenId, yellow
           <div style={{ padding: 24, fontSize: 13, color: C.inkSoft, textAlign: "center" }}>Aucune autre œuvre trouvée.</div>
         )}
         {sorted.map(m => {
-          const isTarget = m.id === targetId;
-          const isGreen = greenId && m.id === greenId;
-          const isYellow = !isGreen && yellowIds && yellowIds.has(m.id);
+          const isTarget = targetWork && m.id === targetWork.id && m.type === targetWork.type;
+          const isGreen = greenWork && m.id === greenWork.id && m.type === greenWork.type;
+          const isYellow = !isGreen && yellowKeys && yellowKeys.has(`${m.id}:${m.type}`);
           const hColor = isGreen ? C.green : isYellow ? C.yellow : null;
           const active = isGreen || isYellow;
           return (
-            <button key={m.id} onClick={() => onPick(m)}
+            <button key={`${m.id}:${m.type}`} onClick={() => onPick(m)}
               style={{ background: active ? hColor + "20" : C.cardBg2,
                 border: active ? `1px solid ${hColor}` : "none",
                 padding: "8px 10px", textAlign: "left", cursor: "pointer",
@@ -1547,7 +1649,7 @@ function MoviePicker({ title, movies, targetId, onPick, onClose, greenId, yellow
 // END SCREEN
 // =========================================================================
 
-function EndScreen({ path, optimal, elapsed, clicks, formatTime, playerSteps, abandoned, hintsUsed, onReplay, onRetry, onMenu, themeColors, glass, glassDark, startId, endId, modeUsed, difficultyUsed }) {
+function EndScreen({ path, optimal, elapsed, clicks, formatTime, playerSteps, abandoned, hintsUsed, onReplay, onRetry, onMenu, themeColors, glass, glassDark, startWork, endWork, modeUsed, difficultyUsed }) {
   const C = themeColors;
   const optimalSteps = optimal && optimal.length > 0 ? Math.max(0, Math.floor((optimal.length - 1) / 2)) : null;
   const isOptimal = !abandoned && optimalSteps !== null && playerSteps <= optimalSteps;
@@ -1560,8 +1662,8 @@ function EndScreen({ path, optimal, elapsed, clicks, formatTime, playerSteps, ab
   } else {
     const diff = playerSteps - optimalSteps;
     if (diff <= 0) { verdict = "Chemin optimal"; verdictColor = C.green; animType = "optimal"; }
-    else if (diff === 1) { verdict = "Une étape de plus"; verdictColor = C.ink; animType = "ok"; }
-    else { verdict = `${diff} étapes de plus`; verdictColor = C.ink; animType = "ok"; }
+    else if (diff === 1) { verdict = "Une étape de plus"; verdictColor = C.greenSoft; animType = "ok"; }
+    else { verdict = `${diff} étapes de plus`; verdictColor = C.greenSoft; animType = "ok"; }
   }
 
   const difficultyCategory = categorizeDifficulty(optimalSteps);
@@ -1570,7 +1672,9 @@ function EndScreen({ path, optimal, elapsed, clicks, formatTime, playerSteps, ab
 
   const [shareStatus, setShareStatus] = useState(null);
   function shareChallenge() {
-    const url = `${window.location.origin}${window.location.pathname}?challenge=${startId}-${endId}`;
+    const sT = startWork.type === "tv" ? "t" : "m";
+    const eT = endWork.type === "tv" ? "t" : "m";
+    const url = `${window.location.origin}${window.location.pathname}?challenge=${startWork.id}${sT}-${endWork.id}${eT}`;
     navigator.clipboard.writeText(url).then(() => {
       setShareStatus("copied");
       setTimeout(() => setShareStatus(null), 2500);
@@ -1626,7 +1730,7 @@ function EndScreen({ path, optimal, elapsed, clicks, formatTime, playerSteps, ab
       {animType === "ok" && (
         <div style={{
           position: "fixed", top: 0, left: 0, right: 0, height: "37vh",
-          background: `linear-gradient(180deg, ${C.amber}cc 0%, ${C.amber}55 60%, transparent 100%)`,
+          background: `linear-gradient(180deg, ${C.greenSoft}cc 0%, ${C.greenSoft}55 60%, transparent 100%)`,
           animation: "barDrop 0.7s cubic-bezier(.4,0,.2,1) forwards",
           pointerEvents: "none", zIndex: 1,
         }} />
@@ -1707,7 +1811,7 @@ function PathStrip({ path, themeColors }) {
               color: node.type === "movie" ? C.ink : C.inkSoft,
               maxWidth: 70, textAlign: "center", lineHeight: 1.2,
               whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-              {node.type === "movie" ? node.data.title : node.data.name.split(" ")[0]}
+              {node.type === "movie" ? (node.data.title || "…") : node.data.name.split(" ")[0]}
             </span>
             {node.type === "movie" && isTv(node.data) && <TvLabel size="tiny" themeColors={C} />}
           </div>
@@ -1722,12 +1826,17 @@ function OptimalPathStrip({ path, themeColors }) {
   const [hydrated, setHydrated] = useState(null);
   useEffect(() => {
     let cancelled = false;
-    const movieIds = path.filter(n => n.type === "movie").map(n => n.id);
-    if (movieIds.length === 0) { setHydrated([]); return; }
-    supabase.from("movies").select("id, title, year, poster_path, type").in("id", movieIds).then(({ data }) => {
+    const workPairs = path.filter(n => n.type === "movie").map(n => n.data);
+    if (workPairs.length === 0) { setHydrated([]); return; }
+    const ids = [...new Set(workPairs.map(w => w.id))];
+    supabase.from("works").select("id, type, title, year, poster_path").in("id", ids).then(({ data }) => {
       if (cancelled || !data) return;
-      const map = new Map(data.map(m => [m.id, m]));
-      setHydrated(path.map(n => n.type === "movie" ? { type: "movie", data: map.get(n.id) || { id: n.id, title: "…" } } : n));
+      const map = new Map(data.map(w => [`${w.id}:${w.type}`, w]));
+      setHydrated(path.map(n => {
+        if (n.type !== "movie") return n;
+        const w = map.get(`${n.data.id}:${n.data.type}`);
+        return { type: "movie", data: w || { id: n.data.id, type: n.data.type, title: "…" } };
+      }));
     });
     return () => { cancelled = true; };
   }, [path]);
@@ -1760,7 +1869,8 @@ function CustomScreen({ onBack, onStart, themeColors, glass, glassDark }) {
   }, [search]);
 
   function tryStart() {
-    if (!start || !end || start.id === end.id) return;
+    if (!start || !end) return;
+    if (start.id === end.id && start.type === end.type) return;
     onStart(start, end);
   }
 
@@ -1801,9 +1911,10 @@ function CustomScreen({ onBack, onStart, themeColors, glass, glassDark }) {
           <div style={{ padding: 24, fontSize: 13, color: C.inkSoft, textAlign: "center" }}>Aucun résultat.</div>
         )}
         {!searching && results.map(m => {
-          const isSelected = pickingFor === "start" ? m.id === start?.id : m.id === end?.id;
+          const sel = pickingFor === "start" ? start : end;
+          const isSelected = sel && m.id === sel.id && m.type === sel.type;
           return (
-            <button key={m.id} onClick={() => {
+            <button key={`${m.id}:${m.type}`} onClick={() => {
               if (pickingFor === "start") { setStart(m); setPickingFor("end"); }
               else { setEnd(m); }
               setSearch("");
