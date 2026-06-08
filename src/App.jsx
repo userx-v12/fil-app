@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
+import { Analytics } from "@vercel/analytics/react";
 
 // =========================================================================
 // SUPABASE
@@ -924,6 +925,7 @@ export default function App() {
                                 themeColors={C} glass={glass} />}
       {screen === "account" && <AccountScreen onBack={() => setScreen("menu")} themeColors={C} glass={glass}
                                   gamesPlayed={gamesPlayed} />}
+      <Analytics />
     </Background>
   );
 }
@@ -1608,7 +1610,7 @@ function MoviePicker({ title, movies, targetWork, onPick, onClose, greenWork, ye
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 420, overflowY: "auto" }}>
         {sorted.length === 0 && (
-          <div style={{ padding: 24, fontSize: 13, color: C.inkSoft, textAlign: "center" }}>Aucune autre œuvre trouvée.</div>
+          <div style={{ padding: 24, fontSize: 13, color: C.inkSoft, textAlign: "center" }}>Aucune autre œuvre trouv��e.</div>
         )}
         {sorted.map(m => {
           const isTarget = targetWork && m.id === targetWork.id && m.type === targetWork.type;
