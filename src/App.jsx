@@ -16,8 +16,25 @@ const TMDB_IMG = "https://image.tmdb.org/t/p";
 // =========================================================================
 
 const GENRES = {
-  16: "Animation", 10751: "Familial", 99: "Documentaire", 10402: "Musical",
-  10770: "Téléfilm", 27: "Horreur", 10749: "Romance",
+  28: "Action",
+  12: "Aventure",
+  16: "Animation",
+  35: "Comédie",
+  80: "Crime",
+  99: "Documentaire",
+  18: "Drame",
+  10751: "Familial",
+  14: "Fantastique",
+  36: "Histoire",
+  27: "Horreur",
+  10402: "Musical",
+  9648: "Mystère",
+  10749: "Romance",
+  878: "Science-Fiction",
+  10770: "Téléfilm",
+  53: "Thriller",
+  10752: "Guerre",
+  37: "Western",
 };
 
 const LANGUAGES = {
@@ -26,10 +43,10 @@ const LANGUAGES = {
 };
 
 const DIFFICULTIES = {
-  random: { label: "Aléatoire", sub: "Sans contrainte",     range: null },
-  easy:   { label: "Facile",    sub: "2 à 3 étapes",        range: [2, 3] },
-  medium: { label: "Moyen",     sub: "3 à 4 étapes",        range: [3, 4] },
-  hard:   { label: "Difficile", sub: "5 étapes ou plus",    range: [5, 99] },
+  random: { label: "Aléatoire", sub: "Niveau au hasard",     range: null },
+  easy:   { label: "Facile",    sub: "2 à 3 étapes",         range: [2, 3] },
+  medium: { label: "Moyen",     sub: "3 à 4 étapes",         range: [3, 4] },
+  hard:   { label: "Difficile", sub: "5 étapes ou plus",     range: [5, 99] },
 };
 
 const MODES = {
@@ -51,6 +68,8 @@ const DEFAULT_PREFS = {
   mode: "movie",
   difficulty: "random",
   languages: ["en", "fr"],
+  filterMode: "exclude",
+  includeGenres: [],
   excludeGenres: [16, 99],
   eras: [],
   minRating: 0,
@@ -59,6 +78,8 @@ const DEFAULT_PREFS = {
 const RED = "#dc2626";
 
 const ACTOR_FILMO_LIMIT = 200;
+const CAST_LIMIT = 50;            // Cast stocké en cache et utilisé par le BFS (plus = plus de chances de trouver des liens)
+const CAST_DISPLAY_DEFAULT = 30;  // Cast affiché par défaut dans le picker, le bouton "Voir plus" expose les autres
 
 function categorizeDifficulty(optimalSteps) {
   if (optimalSteps === null || optimalSteps === undefined) return null;
@@ -78,6 +99,7 @@ const parseWorkKey = (k) => {
 // CACHE
 // =========================================================================
 
+// castCache : clé = "workId:workType"
 const castCache = new Map();
 const filmoCache = new Map();
 const getCachedCast = (id, type) => castCache.get(`${id}:${type}`);
@@ -120,6 +142,8 @@ function markInfoSeen() { try { localStorage.setItem(LS_INFO_SEEN, "1"); } catch
 
 // =========================================================================
 // URL SHARING
+// Nouveau format : ?challenge=550m-1399t  (suffixe m ou t pour le type)
+// Ancien format  : ?challenge=550-1399    (rétro-compat, assumé en movies)
 // =========================================================================
 
 function getChallengeFromURL() {
@@ -127,6 +151,7 @@ function getChallengeFromURL() {
     const params = new URLSearchParams(window.location.search);
     const c = params.get("challenge");
     if (!c) return null;
+    // Nouveau format avec type
     const m = c.match(/^(\d+)([mt])-(\d+)([mt])$/);
     if (m) {
       return {
@@ -136,6 +161,7 @@ function getChallengeFromURL() {
         endType: m[4] === "m" ? "movie" : "tv",
       };
     }
+    // Ancien format : on assume movie pour les deux
     const [a, b] = c.split("-").map(Number);
     if (!a || !b || isNaN(a) || isNaN(b)) return null;
     return { startId: a, startType: "movie", endId: b, endType: "movie" };
@@ -163,6 +189,11 @@ function clearChallengeFromURL() {
 // API
 // =========================================================================
 
+/**
+ * Récupère des œuvres par paires (id, type).
+ * pairs : [{ id, type }, ...]
+ * Retour : tableau de works, dans le même ordre que les paires (ou undefined si absent).
+ */
 async function getWorksByPairs(pairs) {
   if (!pairs?.length) return [];
   const ids = [...new Set(pairs.map(p => p.id))];
@@ -175,7 +206,7 @@ async function getWorksByPairs(pairs) {
   return pairs.map(p => map.get(`${p.id}:${p.type}`));
 }
 
-async function getMovieCast(workId, workType, limit = 30) {
+async function getMovieCast(workId, workType, limit = CAST_LIMIT) {
   const cached = getCachedCast(workId, workType);
   if (cached) return cached.slice(0, limit);
   const { data, error } = await supabase
@@ -184,11 +215,11 @@ async function getMovieCast(workId, workType, limit = 30) {
     .eq("work_id", workId)
     .eq("work_type", workType)
     .order("ord", { ascending: true, nullsFirst: false })
-    .limit(limit);
+    .limit(CAST_LIMIT);
   if (error) throw error;
   const cast = data.map(r => ({ ...r.actors, ord: r.ord }));
   setCachedCast(workId, workType, cast);
-  return cast;
+  return cast.slice(0, limit);
 }
 
 async function getActorMovies(actorId, excludeWorkId = null, excludeWorkType = null, limit = ACTOR_FILMO_LIMIT) {
@@ -206,6 +237,11 @@ async function getActorMovies(actorId, excludeWorkId = null, excludeWorkType = n
   return all.filter(m => !(m.id === excludeWorkId && m.type === excludeWorkType)).slice(0, limit);
 }
 
+/**
+ * Récupère les castings de plusieurs œuvres en un appel.
+ * workPairs : [{ id, type }, ...]
+ * Retour : [{ workId, workType, cast }]
+ */
 async function getMovieCastsBatch(workPairs) {
   const missing = workPairs.filter(p => !getCachedCast(p.id, p.type));
   if (missing.length > 0) {
@@ -221,13 +257,13 @@ async function getMovieCastsBatch(workPairs) {
     const grouped = new Map();
     for (const r of (data || [])) {
       const key = `${r.work_id}:${r.work_type}`;
-      if (!neededKeys.has(key)) continue;
+      if (!neededKeys.has(key)) continue; // évite les collisions cross-type sur même id
       if (!grouped.has(key)) grouped.set(key, []);
       grouped.get(key).push({ ...r.actors, ord: r.ord });
     }
     for (const p of missing) {
       const key = `${p.id}:${p.type}`;
-      setCachedCast(p.id, p.type, (grouped.get(key) || []).slice(0, 30));
+      setCachedCast(p.id, p.type, (grouped.get(key) || []).slice(0, CAST_LIMIT));
     }
   }
   return workPairs.map(p => ({
@@ -272,12 +308,19 @@ async function searchMovies(query, limit = 20) {
 }
 
 async function getCandidatePool(prefs, limit = 500) {
+  // Quand les filtres genres sont actifs, on élargit le pool SQL pour préserver la variété
+  // (le filtrage genres se fait côté JS car les genres sont en JSONB sans index)
+  const filterMode = prefs.filterMode || "exclude";
+  const includeActive = filterMode === "include" && (prefs.includeGenres?.length || 0) > 0;
+  const heavyExclude = filterMode === "exclude" && (prefs.excludeGenres?.length || 0) > 3;
+  const sqlLimit = (includeActive || heavyExclude) ? 2000 : limit;
+
   let q = supabase
     .from("works")
     .select("id, type, title, year, poster_path, popularity, original_language, genre_ids")
     .gte("popularity", 20)
     .order("popularity", { ascending: false })
-    .limit(limit);
+    .limit(sqlLimit);
 
   const modeTypes = MODES[prefs.mode]?.types || MODES.mix.types;
   if (modeTypes.length === 1) q = q.eq("type", modeTypes[0]);
@@ -301,14 +344,26 @@ async function getCandidatePool(prefs, limit = 500) {
   if (error) throw error;
   if (!data) return [];
 
-  if (prefs.excludeGenres?.length) {
-    const excluded = new Set(prefs.excludeGenres.map(Number));
-    return data.filter(m => {
-      const genres = Array.isArray(m.genre_ids) ? m.genre_ids : [];
-      return !genres.some(g => excluded.has(Number(g)));
-    });
+  // Filtrage genres côté JS
+  if (filterMode === "include") {
+    if (prefs.includeGenres?.length > 0) {
+      const included = new Set(prefs.includeGenres.map(Number));
+      return data.filter(m => {
+        const genres = Array.isArray(m.genre_ids) ? m.genre_ids : [];
+        return genres.some(g => included.has(Number(g)));
+      });
+    }
+    return data; // include mode + liste vide = aucun filtre genre
+  } else {
+    if (prefs.excludeGenres?.length > 0) {
+      const excluded = new Set(prefs.excludeGenres.map(Number));
+      return data.filter(m => {
+        const genres = Array.isArray(m.genre_ids) ? m.genre_ids : [];
+        return !genres.some(g => excluded.has(Number(g)));
+      });
+    }
+    return data;
   }
-  return data;
 }
 
 async function pickRandomPair(prefs) {
@@ -327,6 +382,7 @@ async function pickRandomPair(prefs) {
 
 // =========================================================================
 // BFS
+// On identifie chaque œuvre par sa clé composite "id:type".
 // =========================================================================
 
 async function neighborsOfMoviesBatch(works) {
@@ -342,7 +398,7 @@ async function neighborsOfMoviesBatch(works) {
     for (const a of cast) {
       const filmo = getCachedFilmo(a.id) || [];
       for (const m of filmo) {
-        if (m.id === workId && m.type === workType) continue;
+        if (m.id === workId && m.type === workType) continue; // pas soi-même
         neighbors.push({ actor: a, movie: m });
       }
     }
@@ -639,7 +695,7 @@ function AccountIcon({ color }) {
 }
 
 // =========================================================================
-// INFO MODAL
+// INFO MODAL (Comment jouer)
 // =========================================================================
 
 function InfoModal({ onClose, themeColors, glass, glassDark }) {
@@ -825,26 +881,65 @@ export default function App() {
 
   async function startRandom() {
     clearChallengeFromURL();
-    setLoadingChallenge(true);
-    setLoadingLabel("Sélection du défi…");
     setError(null);
-    try {
-      const { start, end } = await pickRandomPair(prefs);
-      setChallenge({ start, end, optimal: null, optimalLoading: true, modeUsed: prefs.mode, difficultyUsed: prefs.difficulty });
-      setGameKey(k => k + 1);
-      setScreen("game");
-      setLoadingChallenge(false);
 
-      const optimal = await findOptimalPath(start, end, 5);
-      if (!optimal || optimal.length < 3) {
-        setError("Aucun chemin trouvé, on relance…");
-        setScreen("menu");
-        setTimeout(() => startRandom(), 100);
-        return;
+    // En mode "Aléatoire", on pioche secrètement easy/medium/hard pour préserver la surprise
+    const isRandomMode = prefs.difficulty === "random";
+    let target = prefs.difficulty;
+    if (isRandomMode) {
+      const pool = ["easy", "medium", "hard"];
+      target = pool[Math.floor(Math.random() * pool.length)];
+    }
+    const targetRange = DIFFICULTIES[target]?.range;
+    const targetLabel = DIFFICULTIES[target]?.label || "défi";
+
+    setLoadingChallenge(true);
+    setLoadingLabel(isRandomMode
+      ? "Recherche d'un défi…"
+      : `Recherche d'un défi ${targetLabel.toLowerCase()}…`);
+
+    const MAX_TRIES = 10;
+    let lastAttempt = null;
+
+    try {
+      for (let attempt = 0; attempt < MAX_TRIES; attempt++) {
+        const { start, end } = await pickRandomPair(prefs);
+        const optimal = await findOptimalPath(start, end, 5);
+        if (!optimal || optimal.length < 3) continue;
+
+        const steps = Math.floor((optimal.length - 1) / 2);
+        lastAttempt = { start, end, optimal };
+
+        if (!targetRange || (steps >= targetRange[0] && steps <= targetRange[1])) {
+          setChallenge({
+            start, end, optimal,
+            optimalLoading: false,
+            modeUsed: prefs.mode,
+            difficultyUsed: target,
+          });
+          setGameKey(k => k + 1);
+          setScreen("game");
+          setLoadingChallenge(false);
+          return;
+        }
       }
-      setChallenge(c => c && c.start.id === start.id && c.start.type === start.type
-                          && c.end.id === end.id && c.end.type === end.type
-        ? { ...c, optimal, optimalLoading: false } : c);
+
+      // Fallback : on accepte le dernier essai même si la difficulté ne matche pas exactement
+      if (lastAttempt) {
+        setError(`Pas de défi ${targetLabel.toLowerCase()} trouvé, voici le plus proche.`);
+        setChallenge({
+          start: lastAttempt.start, end: lastAttempt.end,
+          optimal: lastAttempt.optimal,
+          optimalLoading: false,
+          modeUsed: prefs.mode,
+          difficultyUsed: target,
+        });
+        setGameKey(k => k + 1);
+        setScreen("game");
+        setLoadingChallenge(false);
+      } else {
+        throw new Error("Aucun défi trouvé. Élargis tes critères.");
+      }
     } catch (e) {
       setError(e.message);
       setLoadingChallenge(false);
@@ -959,7 +1054,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
   const items = [
     { key: "play", label: "Jouer", sub: "Défi aléatoire", action: onPlay, primary: true },
     { key: "custom", label: "Sur Mesure", sub: "Choisis ton défi", action: () => onNavigate("custom") },
-    { key: "multi", label: "Multijoueur", sub: "Affronte tes amis", action: () => onNavigate("multi") },
+    { key: "multi", label: "Versus", sub: "Affronte un ami", action: () => onNavigate("multi") },
     { key: "options", label: "Options", sub: "Langues, genres, époques", action: () => onNavigate("options") },
   ];
 
@@ -1041,7 +1136,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.5</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.6</div>
     </div>
   );
 }
@@ -1055,10 +1150,8 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
   const allLangs = Object.keys(LANGUAGES);
   const allGenres = Object.keys(GENRES);
   const allLangsChecked = prefs.languages.length === allLangs.length;
-  const allGenresExcluded = prefs.excludeGenres.length === allGenres.length;
 
   function toggleAllLangs() { setPrefs(p => ({ ...p, languages: allLangsChecked ? ["en"] : allLangs })); }
-  function toggleAllGenres() { setPrefs(p => ({ ...p, excludeGenres: allGenresExcluded ? [] : allGenres.map(Number) })); }
   function toggleLang(code) {
     setPrefs(p => {
       const has = p.languages.includes(code);
@@ -1069,8 +1162,17 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
   function toggleGenre(id) {
     setPrefs(p => {
       const n = Number(id);
-      const has = p.excludeGenres.map(Number).includes(n);
-      return { ...p, excludeGenres: has ? p.excludeGenres.filter(g => Number(g) !== n) : [...p.excludeGenres, n] };
+      const isInclude = (p.filterMode || "exclude") === "include";
+      const key = isInclude ? "includeGenres" : "excludeGenres";
+      const cur = (p[key] || []).map(Number);
+      const has = cur.includes(n);
+      return { ...p, [key]: has ? cur.filter(g => g !== n) : [...cur, n] };
+    });
+  }
+  function clearGenres() {
+    setPrefs(p => {
+      const isInclude = (p.filterMode || "exclude") === "include";
+      return { ...p, [isInclude ? "includeGenres" : "excludeGenres"]: [] };
     });
   }
   function toggleEra(key) {
@@ -1081,7 +1183,7 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
     });
   }
   function resetDefaults() {
-    setPrefs(p => ({ ...p, languages: ["en", "fr"], excludeGenres: [16, 99], eras: [], minRating: 0 }));
+    setPrefs(p => ({ ...p, languages: ["en", "fr"], filterMode: "exclude", includeGenres: [], excludeGenres: [16, 99], eras: [], minRating: 0 }));
   }
 
   return (
@@ -1214,30 +1316,63 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
       </div>
 
       <div style={{ marginBottom: 28 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-          <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Genres exclus du tirage</div>
-          <button onClick={toggleAllGenres}
-            style={{ background: "none", border: "none", color: C.ink, fontFamily: "inherit",
-              fontSize: 10, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
-              cursor: "pointer", opacity: 0.75 }}>{allGenresExcluded ? "Tout décocher" : "Tout cocher"}</button>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 10, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Genres</div>
+          <div style={{ display: "flex", gap: 4, ...glass, padding: 3, borderRadius: 999 }}>
+            {[{ key: "include", label: "Inclure" }, { key: "exclude", label: "Exclure" }].map(({ key, label }) => {
+              const active = (prefs.filterMode || "exclude") === key;
+              return (
+                <button key={key} onClick={() => setPrefs(p => ({ ...p, filterMode: key }))}
+                  style={{ padding: "6px 14px", borderRadius: 999, border: "none",
+                    background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
+                    fontFamily: "inherit", fontSize: 10, fontWeight: 700,
+                    letterSpacing: 0.8, textTransform: "uppercase",
+                    cursor: "pointer", transition: "background .15s" }}>{label}</button>
+              );
+            })}
+          </div>
         </div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-          {allGenres.map(id => {
-            const active = prefs.excludeGenres.map(Number).includes(Number(id));
-            return (
-              <button key={id} onClick={() => toggleGenre(id)}
-                style={{ padding: "8px 14px", borderRadius: 999,
-                  border: `1px solid ${active ? C.ink : C.hairline}`,
-                  background: active ? C.ink : C.cardBg, color: active ? C.bg : C.ink,
-                  fontFamily: "inherit", fontSize: 12, fontWeight: 600,
-                  cursor: "pointer", transition: "all .15s",
-                  textDecoration: active ? "line-through" : "none" }}>{GENRES[id]}</button>
-            );
-          })}
-        </div>
-        <div style={{ fontSize: 11, color: C.inkMute, marginTop: 10, fontWeight: 500, lineHeight: 1.4 }}>
-          Les genres exclus ne seront pas tirés comme départ ou arrivée, mais restent disponibles dans la filmographie des acteurs.
-        </div>
+
+        {(() => {
+          const isInclude = (prefs.filterMode || "exclude") === "include";
+          const activeList = isInclude ? (prefs.includeGenres || []) : (prefs.excludeGenres || []);
+          const hasSelection = activeList.length > 0;
+          return (
+            <>
+              {hasSelection && (
+                <div style={{ marginBottom: 10, display: "flex", justifyContent: "flex-end" }}>
+                  <button onClick={clearGenres}
+                    style={{ background: "none", border: "none", color: C.ink, fontFamily: "inherit",
+                      fontSize: 10, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
+                      cursor: "pointer", opacity: 0.75 }}>Vider</button>
+                </div>
+              )}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {allGenres.map(id => {
+                  const active = activeList.map(Number).includes(Number(id));
+                  return (
+                    <button key={id} onClick={() => toggleGenre(id)}
+                      style={{ padding: "8px 14px", borderRadius: 999,
+                        border: `1px solid ${active ? C.ink : C.hairline}`,
+                        background: active ? C.ink : C.cardBg, color: active ? C.bg : C.ink,
+                        fontFamily: "inherit", fontSize: 12, fontWeight: 600,
+                        cursor: "pointer", transition: "all .15s",
+                        textDecoration: (!isInclude && active) ? "line-through" : "none" }}>{GENRES[id]}</button>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: 11, color: C.inkMute, marginTop: 10, fontWeight: 500, lineHeight: 1.4 }}>
+                {isInclude
+                  ? (hasSelection
+                      ? "Seuls les genres cochés seront tirés comme départ ou arrivée."
+                      : "Aucun filtre actif : tous les genres sont autorisés.")
+                  : (hasSelection
+                      ? "Les genres barrés ne seront pas tirés comme départ ou arrivée."
+                      : "Aucun filtre actif : tous les genres sont autorisés.")}
+              </div>
+            </>
+          );
+        })()}
       </div>
 
       <button onClick={resetDefaults}
@@ -1287,6 +1422,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, themeColors, g
     return () => clearInterval(id);
   }, [startTime, finished]);
 
+  // L'indice ne devient disponible qu'après 15s à chaque nouvelle étape, pour décourager son usage compulsif.
   useEffect(() => {
     setHintAvailable(false);
     const t = setTimeout(() => setHintAvailable(true), 15000);
@@ -1340,6 +1476,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, themeColors, g
   const playerSteps = Math.max(0, Math.floor((path.length - 1) / 2));
   const formatTime = (ms) => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
 
+  // Sets of "id:type" pour les œuvres déjà visitées
   const visitedMovieKeys = useMemo(
     () => new Set(path.filter(n => n.type === "movie").map(n => workKey(n.data))),
     [path]
@@ -1373,6 +1510,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, themeColors, g
   const noGreenAvailable = hintActive && !greenHint;
   const showBackInGreen = hintActive && noGreenAvailable && (path.length > 1 || selectedActor);
 
+  // L'indice s'éteint dès qu'on a fait notre prochain choix (changement de path ou ouverture/fermeture d'une filmo).
   useEffect(() => { setHintActive(false); }, [path.length, selectedActor]);
 
   function pickActor(actor) { setClicks(c => c + 1); setSelectedActor(actor); }
@@ -1591,6 +1729,7 @@ function Trail({ path, themeColors, glass }) {
 
 function ActorPicker({ title, actors, onPick, greenId, yellowIds, sort, onToggleSort, themeColors, glass }) {
   const C = themeColors;
+  const [expanded, setExpanded] = useState(false);
   const sorted = useMemo(() => {
     const copy = [...actors];
     if (sort === "ord") {
@@ -1601,26 +1740,31 @@ function ActorPicker({ title, actors, onPick, greenId, yellowIds, sort, onToggle
     return copy;
   }, [actors, sort]);
 
+  const visible = expanded ? sorted : sorted.slice(0, CAST_DISPLAY_DEFAULT);
+  const hiddenCount = Math.max(0, sorted.length - CAST_DISPLAY_DEFAULT);
+
   return (
     <div style={{ ...glass, borderRadius: 20, padding: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 6px 12px", gap: 10 }}>
         <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, fontWeight: 600, flex: 1, minWidth: 0,
           whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{title}</div>
         {onToggleSort && (
-          <button onClick={onToggleSort}
-            style={{ background: "none", border: "none", color: C.inkSoft, fontFamily: "inherit",
-              fontSize: 10, fontWeight: 600, letterSpacing: 0.8, textTransform: "uppercase",
-              cursor: "pointer", display: "flex", alignItems: "center", gap: 4, opacity: 0.7, padding: 0 }}>
-            Trier · {sort === "ord" ? "Rôle" : "Popularité"}
-            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="8 9 12 5 16 9"/>
-              <polyline points="16 15 12 19 8 15"/>
-            </svg>
-          </button>
+          <div style={{ width: 125, flexShrink: 0, display: "flex", justifyContent: "flex-end" }}>
+            <button onClick={onToggleSort}
+              style={{ background: "none", border: "none", color: C.inkSoft, fontFamily: "inherit",
+                fontSize: 10, fontWeight: 600, letterSpacing: 0.8, textTransform: "uppercase",
+                cursor: "pointer", display: "flex", alignItems: "center", gap: 4, opacity: 0.7, padding: 0 }}>
+              Trier · {sort === "ord" ? "Rôle" : "Popularité"}
+              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="8 9 12 5 16 9"/>
+                <polyline points="16 15 12 19 8 15"/>
+              </svg>
+            </button>
+          </div>
         )}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
-        {sorted.map(a => {
+        {visible.map(a => {
           const isGreen = greenId && a.id === greenId;
           const isYellow = !isGreen && yellowIds && yellowIds.has(a.id);
           const hColor = isGreen ? C.green : isYellow ? C.yellow : null;
@@ -1640,6 +1784,17 @@ function ActorPicker({ title, actors, onPick, greenId, yellowIds, sort, onToggle
           );
         })}
       </div>
+      {hiddenCount > 0 && (
+        <button onClick={() => setExpanded(e => !e)}
+          style={{ marginTop: 12, width: "100%", background: "transparent",
+            border: `1px solid ${C.hairline}`, borderRadius: 12, padding: "10px 14px",
+            fontSize: 10, letterSpacing: 1.5, textTransform: "uppercase",
+            color: C.inkSoft, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", transition: "background .15s" }}
+          onMouseEnter={(e) => e.currentTarget.style.background = C.cardHover}
+          onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}>
+          {expanded ? "Voir moins" : `Voir plus (+${hiddenCount} acteurs)`}
+        </button>
+      )}
     </div>
   );
 }
@@ -1661,16 +1816,18 @@ function MoviePicker({ title, movies, targetWork, onPick, onClose, greenWork, ye
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px 6px", gap: 10 }}>
         <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, fontWeight: 600, flex: 1, minWidth: 0,
           whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{title}</div>
-        <button onClick={onToggleSort}
-          style={{ background: "none", border: "none", color: C.inkSoft, fontFamily: "inherit",
-            fontSize: 10, fontWeight: 600, letterSpacing: 0.8, textTransform: "uppercase",
-            cursor: "pointer", display: "flex", alignItems: "center", gap: 4, opacity: 0.7, padding: 0 }}>
-          Trier · {sort === "date" ? "Date" : "Popularité"}
-          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="8 9 12 5 16 9"/>
-            <polyline points="16 15 12 19 8 15"/>
-          </svg>
-        </button>
+        <div style={{ width: 105, flexShrink: 0, display: "flex", justifyContent: "flex-end" }}>
+          <button onClick={onToggleSort}
+            style={{ background: "none", border: "none", color: C.inkSoft, fontFamily: "inherit",
+              fontSize: 10, fontWeight: 600, letterSpacing: 0.8, textTransform: "uppercase",
+              cursor: "pointer", display: "flex", alignItems: "center", gap: 4, opacity: 0.7, padding: 0 }}>
+            Trier · {sort === "date" ? "Date" : "Popularité"}
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="8 9 12 5 16 9"/>
+              <polyline points="16 15 12 19 8 15"/>
+            </svg>
+          </button>
+        </div>
         <button onClick={onClose} style={{ ...iconBtn(C), fontSize: 14 }}>✕</button>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 420, overflowY: "auto" }}>
@@ -1763,7 +1920,7 @@ function EndScreen({ path, optimal, elapsed, clicks, formatTime, playerSteps, ab
   };
 
   return (
-    <div style={{ textAlign: "center", paddingTop: 8, position: "relative" }}>
+    <div style={{ textAlign: "center", paddingTop: 8, position: "relative", isolation: "isolate" }}>
       <style>{`
         @keyframes verdictPop {
           0%   { opacity: 0; transform: scale(0.7); }
@@ -1791,7 +1948,7 @@ function EndScreen({ path, optimal, elapsed, clicks, formatTime, playerSteps, ab
           position: "fixed", top: 0, left: 0, right: 0, height: "65vh",
           background: `linear-gradient(180deg, ${C.green}cc 0%, ${C.green}66 30%, ${C.green}22 70%, transparent 100%)`,
           animation: "greenDescend 1.4s cubic-bezier(.4,0,.2,1) forwards, greenPulse 3.5s ease-in-out 1.4s infinite",
-          pointerEvents: "none", zIndex: 1,
+          pointerEvents: "none", zIndex: 0,
         }} />
       )}
       {animType === "ok" && (
@@ -1799,7 +1956,7 @@ function EndScreen({ path, optimal, elapsed, clicks, formatTime, playerSteps, ab
           position: "fixed", top: 0, left: 0, right: 0, height: "37vh",
           background: `linear-gradient(180deg, ${C.greenSoft}cc 0%, ${C.greenSoft}55 60%, transparent 100%)`,
           animation: "barDrop 0.7s cubic-bezier(.4,0,.2,1) forwards",
-          pointerEvents: "none", zIndex: 1,
+          pointerEvents: "none", zIndex: 0,
         }} />
       )}
       {animType === "abandon" && (
@@ -1807,7 +1964,7 @@ function EndScreen({ path, optimal, elapsed, clicks, formatTime, playerSteps, ab
           position: "fixed", top: 0, left: 0, right: 0, height: "10vh",
           background: `linear-gradient(180deg, ${RED}cc 0%, ${RED}44 70%, transparent 100%)`,
           animation: "barDrop 0.6s cubic-bezier(.4,0,.2,1) forwards",
-          pointerEvents: "none", zIndex: 1,
+          pointerEvents: "none", zIndex: 0,
         }} />
       )}
 
@@ -1972,37 +2129,39 @@ function CustomScreen({ onBack, onStart, themeColors, glass, glassDark }) {
           style={{ width: "100%", background: "transparent", border: "none", outline: "none",
             padding: "10px 12px", fontSize: 14, fontFamily: "inherit", color: C.ink, fontWeight: 500 }} />
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 320, overflowY: "auto", ...glass, borderRadius: 16, padding: 6 }}>
-        {searching && <Spinner label="Recherche" themeColors={C} />}
-        {!searching && results.length === 0 && search.length >= 2 && (
-          <div style={{ padding: 24, fontSize: 13, color: C.inkSoft, textAlign: "center" }}>Aucun résultat.</div>
-        )}
-        {!searching && results.map(m => {
-          const sel = pickingFor === "start" ? start : end;
-          const isSelected = sel && m.id === sel.id && m.type === sel.type;
-          return (
-            <button key={`${m.id}:${m.type}`} onClick={() => {
-              if (pickingFor === "start") { setStart(m); setPickingFor("end"); }
-              else { setEnd(m); }
-              setSearch("");
-            }}
-              style={{ background: isSelected ? C.ink : C.cardBg2,
-                color: isSelected ? C.bg : C.ink, border: "none",
-                padding: "8px 10px", textAlign: "left", cursor: "pointer",
-                display: "flex", alignItems: "center", gap: 12, fontFamily: "inherit", borderRadius: 12 }}>
-              <Poster movie={m} size={36} rounded={6} themeColors={C} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 14, fontWeight: 700, letterSpacing: -0.3,
-                  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.title}</div>
-                <div style={{ fontSize: 11, opacity: .6, fontWeight: 500 }}>
-                  {m.year}
-                  {isTv(m) && <span style={{ marginLeft: 6, letterSpacing: 1.5, textTransform: "uppercase", fontSize: 9, fontWeight: 700 }}>· série</span>}
+      {search.length >= 2 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 320, overflowY: "auto", ...glass, borderRadius: 16, padding: 6 }}>
+          {searching && <Spinner label="Recherche" themeColors={C} />}
+          {!searching && results.length === 0 && (
+            <div style={{ padding: 24, fontSize: 13, color: C.inkSoft, textAlign: "center" }}>Aucun résultat.</div>
+          )}
+          {!searching && results.map(m => {
+            const sel = pickingFor === "start" ? start : end;
+            const isSelected = sel && m.id === sel.id && m.type === sel.type;
+            return (
+              <button key={`${m.id}:${m.type}`} onClick={() => {
+                if (pickingFor === "start") { setStart(m); setPickingFor("end"); }
+                else { setEnd(m); }
+                setSearch("");
+              }}
+                style={{ background: isSelected ? C.ink : C.cardBg2,
+                  color: isSelected ? C.bg : C.ink, border: "none",
+                  padding: "8px 10px", textAlign: "left", cursor: "pointer",
+                  display: "flex", alignItems: "center", gap: 12, fontFamily: "inherit", borderRadius: 12 }}>
+                <Poster movie={m} size={36} rounded={6} themeColors={C} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, letterSpacing: -0.3,
+                    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.title}</div>
+                  <div style={{ fontSize: 11, opacity: .6, fontWeight: 500 }}>
+                    {m.year}
+                    {isTv(m) && <span style={{ marginLeft: 6, letterSpacing: 1.5, textTransform: "uppercase", fontSize: 9, fontWeight: 700 }}>· série</span>}
+                  </div>
                 </div>
-              </div>
-            </button>
-          );
-        })}
-      </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
       <button onClick={tryStart} disabled={!start || !end}
         style={{ ...btnPrimary, marginTop: 20, width: "100%",
           opacity: (!start || !end) ? 0.3 : 1, cursor: (!start || !end) ? "not-allowed" : "pointer" }}>
@@ -2053,7 +2212,7 @@ function MultiScreen({ onBack, themeColors, glass }) {
         <div style={{ display: "flex", justifyContent: "center", marginBottom: 16, opacity: .25 }}><LogoMark size={40} color={C.ink} /></div>
         <div style={{ fontWeight: 800, fontSize: 28, marginBottom: 8, letterSpacing: -1, color: C.ink }}>Bientôt disponible</div>
         <div style={{ fontSize: 13, color: C.inkSoft, lineHeight: 1.5, fontWeight: 500 }}>
-          Le multijoueur arrive dans la prochaine étape :<br />invitations, défis en temps réel, classements.
+          Le mode Versus arrive bientôt :<br />duels en temps réel, défis partagés, classements entre amis.
         </div>
       </div>
     </div>
