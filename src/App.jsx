@@ -1056,6 +1056,7 @@ export default function App() {
   const [gamesPlayed, setGamesPlayed] = useState(loadGamesPlayed);
   const [showInfo, setShowInfo] = useState(false);
   const [versusCode, setVersusCode] = useState(null); // Code de partie Versus en cours
+  const [versusContext, setVersusContext] = useState(null); // Contexte du jeu Versus { matchId, code, myPlayerId, mySlot, myName, opponentName, opponentPlayerId }
 
   useEffect(() => { savePrefs(prefs); }, [prefs]);
   useEffect(() => { document.body.style.background = C.bg; saveTheme(theme); }, [theme, C.bg]);
@@ -1267,6 +1268,61 @@ export default function App() {
   function retrySame() { setGameKey(k => k + 1); }
   function onGameFinished() { setGamesPlayed(incrementGamesPlayed()); }
 
+  // Prépare et lance le jeu Versus : fetch works + BFS + setup versusContext
+  async function prepareAndStartVersusGame(match) {
+    setLoadingChallenge(true);
+    setLoadingLabel("Préparation du défi…");
+    setError(null);
+    try {
+      const works = await getWorksByPairs([
+        { id: match.start_id, type: match.start_type },
+        { id: match.end_id,   type: match.end_type   },
+      ]);
+      const start = works[0];
+      const end   = works[1];
+      if (!start || !end) throw new Error("Œuvres introuvables.");
+
+      const players = await getMatchPlayers(match.id);
+      const myToken = getPlayerToken();
+      const me = players.find(p => p.player_token === myToken);
+      const opp = players.find(p => p.player_token !== myToken);
+      if (!me) throw new Error("Tu n'es pas dans cette partie.");
+
+      const optimal = await findOptimalPath(start, end, 5);
+
+      setChallenge({
+        start, end, optimal,
+        optimalLoading: false,
+        modeUsed: "versus",
+        difficultyUsed: match.difficulty,
+      });
+      setVersusContext({
+        matchId: match.id,
+        code: match.code,
+        myPlayerId: me.id,
+        mySlot: me.slot,
+        myName: me.player_name,
+        opponentName: opp?.player_name || "Adversaire",
+        opponentPlayerId: opp?.id || null,
+      });
+      setGameKey(k => k + 1);
+      setScreen("game");
+    } catch (e) {
+      console.error(e);
+      setError(e.message);
+    } finally {
+      setLoadingChallenge(false);
+    }
+  }
+
+  function exitVersus() {
+    clearVersusFromURL();
+    setVersusCode(null);
+    setVersusContext(null);
+    setChallenge(null);
+    setScreen("menu");
+  }
+
   const showTopButtons = screen !== "game";
 
   return (
@@ -1304,10 +1360,12 @@ export default function App() {
       )}
       {screen === "game" && challenge && (
         <Game key={gameKey} challenge={challenge}
-              onExit={() => { clearChallengeFromURL(); setScreen("menu"); }}
-              onReplay={startRandom} onRetry={retrySame}
+              onExit={versusContext ? exitVersus : () => { clearChallengeFromURL(); setScreen("menu"); }}
+              onReplay={versusContext ? null : startRandom}
+              onRetry={versusContext ? null : retrySame}
               onFinished={onGameFinished}
-              onRefreshPart={refreshOnePart}
+              onRefreshPart={versusContext ? null : refreshOnePart}
+              versusContext={versusContext}
               themeColors={C} glass={glass} glassDark={glassDark} theme={theme} />
       )}
       {screen === "custom" && <CustomScreen onBack={() => setScreen("menu")} onStart={startCustom}
@@ -1325,7 +1383,7 @@ export default function App() {
       {screen === "versus-lobby" && versusCode && <VersusLobbyScreen
                                 code={versusCode}
                                 onBack={() => { clearVersusFromURL(); setVersusCode(null); setScreen("multi"); }}
-                                onStart={() => { /* Session 2 : démarrera le game */ }}
+                                onStartGame={prepareAndStartVersusGame}
                                 themeColors={C} glass={glass} glassDark={glassDark} />}
       {screen === "versus-join" && versusCode && <VersusJoinScreen
                                 code={versusCode}
@@ -1435,7 +1493,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.8</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.9</div>
     </div>
   );
 }
@@ -1786,8 +1844,9 @@ function Star({ fill, size, color, emptyColor }) {
 // GAME
 // =========================================================================
 
-function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart, themeColors, glass, glassDark, theme }) {
+function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart, versusContext, themeColors, glass, glassDark, theme }) {
   const C = themeColors;
+  const isVersus = !!versusContext;
   const [path, setPath] = useState([{ type: "movie", data: challenge.start }]);
   const [castOfCurrent, setCastOfCurrent] = useState(null);
   const [filmoOfActor, setFilmoOfActor] = useState(null);
@@ -1806,11 +1865,75 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
   const [filmoSort, setFilmoSort] = useState("popularity");
   const [castSort, setCastSort] = useState("popularity");
 
+  // ÉTAT VERSUS : progression de l'adversaire en temps réel
+  const [opponentSteps, setOpponentSteps] = useState(0);
+  const [opponentFinished, setOpponentFinished] = useState(false);
+  const [opponentAbandoned, setOpponentAbandoned] = useState(false);
+  const [opponentFinalSteps, setOpponentFinalSteps] = useState(null);
+  const [opponentFinalTimeMs, setOpponentFinalTimeMs] = useState(null);
+
   const currentMovie = path[path.length - 1].data;
   const isAtEnd = currentMovie.id === challenge.end.id && currentMovie.type === challenge.end.type;
 
-  useEffect(() => { setChallengeInURL(challenge.start, challenge.end); },
-    [challenge.start.id, challenge.start.type, challenge.end.id, challenge.end.type]);
+  useEffect(() => {
+    if (isVersus) return; // L'URL versus est gérée ailleurs, on ne touche pas à ?challenge=
+    setChallengeInURL(challenge.start, challenge.end);
+  }, [isVersus, challenge.start.id, challenge.start.type, challenge.end.id, challenge.end.type]);
+
+  // VERSUS : broadcast de ma progression à chaque changement de path
+  useEffect(() => {
+    if (!isVersus || finished) return;
+    const lightPath = path.map(n =>
+      n.type === "movie"
+        ? { type: "movie", id: n.data.id, work_type: n.data.type }
+        : { type: "actor", id: n.data.id });
+    const steps = Math.max(0, Math.floor((path.length - 1) / 2));
+    updatePlayerProgress(versusContext.myPlayerId, {
+      currentPath: lightPath,
+      currentSteps: steps,
+      hintsUsed,
+    }).catch(() => {});
+  }, [isVersus, path, finished, hintsUsed, versusContext]);
+
+  // VERSUS : subscribe à l'adversaire (initial fetch + realtime)
+  useEffect(() => {
+    if (!isVersus) return;
+    let cancelled = false;
+
+    // Initial fetch
+    (async () => {
+      try {
+        const players = await getMatchPlayers(versusContext.matchId);
+        if (cancelled) return;
+        const opp = players.find(p => p.id !== versusContext.myPlayerId);
+        if (opp) {
+          setOpponentSteps(opp.current_steps || 0);
+          setOpponentFinished(!!opp.finished);
+          setOpponentAbandoned(!!opp.abandoned);
+          setOpponentFinalSteps(opp.final_steps);
+          setOpponentFinalTimeMs(opp.final_time_ms);
+        }
+      } catch {}
+    })();
+
+    const channel = supabase.channel(`game-${versusContext.matchId}`)
+      .on("postgres_changes", {
+        event: "*", schema: "public", table: "match_players",
+        filter: `match_id=eq.${versusContext.matchId}`,
+      }, (payload) => {
+        const p = payload.new || payload.old;
+        if (!p || p.id === versusContext.myPlayerId) return;
+        if (payload.eventType === "DELETE") return;
+        setOpponentSteps(p.current_steps || 0);
+        setOpponentFinished(!!p.finished);
+        setOpponentAbandoned(!!p.abandoned);
+        setOpponentFinalSteps(p.final_steps);
+        setOpponentFinalTimeMs(p.final_time_ms);
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [isVersus, versusContext]);
 
   useEffect(() => {
     if (finished) return;
@@ -1829,8 +1952,15 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
     if (isAtEnd && !finished) {
       setFinished(true);
       onFinished && onFinished();
+      if (isVersus) {
+        const finalSteps = Math.max(0, Math.floor((path.length - 1) / 2));
+        const finalTimeMs = Date.now() - startTime;
+        finishPlayer(versusContext.myPlayerId, {
+          finalSteps, finalTimeMs, abandoned: false, hintsUsed,
+        }).catch(() => {});
+      }
     }
-  }, [isAtEnd, finished, onFinished]);
+  }, [isAtEnd, finished, onFinished, isVersus, versusContext, path.length, startTime, hintsUsed]);
 
   useEffect(() => {
     if (!confirmingAbandon) return;
@@ -1932,9 +2062,39 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
     setAbandoned(true);
     setFinished(true);
     onFinished && onFinished();
+    if (isVersus) {
+      const finalSteps = Math.max(0, Math.floor((path.length - 1) / 2));
+      const finalTimeMs = Date.now() - startTime;
+      finishPlayer(versusContext.myPlayerId, {
+        finalSteps, finalTimeMs, abandoned: true, hintsUsed,
+      }).catch(() => {});
+    }
   }
 
   if (finished) {
+    if (isVersus) {
+      return (
+        <GameShell elapsed={elapsed} clicks={clicks} formatTime={formatTime} onExit={onExit} muted themeColors={C} glass={glass}>
+          <VersusEndScreen
+            myName={versusContext.myName}
+            opponentName={versusContext.opponentName}
+            mySteps={playerSteps}
+            myTimeMs={elapsed}
+            myAbandoned={abandoned}
+            myHintsUsed={hintsUsed}
+            opponentFinished={opponentFinished}
+            opponentAbandoned={opponentAbandoned}
+            opponentSteps={opponentSteps}
+            opponentFinalSteps={opponentFinalSteps}
+            opponentFinalTimeMs={opponentFinalTimeMs}
+            optimalSteps={challenge.optimal ? Math.max(0, Math.floor((challenge.optimal.length - 1) / 2)) : null}
+            optimalPath={challenge.optimal}
+            startWork={challenge.start} endWork={challenge.end}
+            onExit={onExit}
+            themeColors={C} glass={glass} glassDark={glassDark} />
+        </GameShell>
+      );
+    }
     return (
       <GameShell elapsed={elapsed} clicks={clicks} formatTime={formatTime} onExit={onExit} muted themeColors={C} glass={glass}>
         <EndScreen path={path} optimal={challenge.optimal} elapsed={elapsed} clicks={clicks}
@@ -1953,6 +2113,18 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
         @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
         .fadeUp { animation: fadeUp .35s ease both; }
       `}</style>
+
+      {isVersus && (
+        <VersusBanner
+          myName={versusContext.myName}
+          opponentName={versusContext.opponentName}
+          mySteps={playerSteps}
+          opponentSteps={opponentSteps}
+          opponentFinished={opponentFinished}
+          opponentAbandoned={opponentAbandoned}
+          opponentFinalSteps={opponentFinalSteps}
+          themeColors={C} glass={glass} />
+      )}
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 24 }}>
         <Goal label="Départ" movie={challenge.start} themeColors={C}
@@ -2514,6 +2686,205 @@ function OptimalPathStrip({ path, themeColors }) {
 // CUSTOM SCREEN
 // =========================================================================
 
+// =========================================================================
+// VERSUS — Composants in-game (banner + écran de fin)
+// =========================================================================
+
+function VersusBanner({ myName, opponentName, mySteps, opponentSteps, opponentFinished, opponentAbandoned, opponentFinalSteps, themeColors, glass }) {
+  const C = themeColors;
+  const oppDisplay = opponentAbandoned ? "Abandon"
+                   : opponentFinished  ? `${opponentFinalSteps ?? opponentSteps} ét.`
+                                       : `${opponentSteps} ét.`;
+  const oppColor = opponentAbandoned ? C.amber
+                  : opponentFinished ? C.green
+                                     : C.ink;
+  return (
+    <div style={{ ...glass, borderRadius: 14, padding: "10px 14px",
+      display: "flex", alignItems: "center", justifyContent: "space-between",
+      gap: 12, marginBottom: 14 }}>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", minWidth: 0, flex: 1 }}>
+        <div style={{ fontSize: 9, letterSpacing: 1.8, textTransform: "uppercase", color: C.inkMute, fontWeight: 600 }}>{myName} · toi</div>
+        <div style={{ fontSize: 16, fontWeight: 800, color: C.ink, letterSpacing: -0.4, fontVariantNumeric: "tabular-nums" }}>{mySteps} ét.</div>
+      </div>
+      <div style={{ width: 1, alignSelf: "stretch", background: C.hairline }} />
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", minWidth: 0, flex: 1 }}>
+        <div style={{ fontSize: 9, letterSpacing: 1.8, textTransform: "uppercase", color: C.inkMute, fontWeight: 600,
+          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>{opponentName}</div>
+        <div style={{ fontSize: 16, fontWeight: 800, color: oppColor, letterSpacing: -0.4, fontVariantNumeric: "tabular-nums" }}>{oppDisplay}</div>
+      </div>
+    </div>
+  );
+}
+
+function VersusEndScreen({
+  myName, opponentName,
+  mySteps, myTimeMs, myAbandoned, myHintsUsed,
+  opponentFinished, opponentAbandoned, opponentSteps,
+  opponentFinalSteps, opponentFinalTimeMs,
+  optimalSteps, optimalPath,
+  startWork, endWork,
+  onExit,
+  themeColors, glass, glassDark
+}) {
+  const C = themeColors;
+  const formatTime = (ms) => {
+    if (ms == null) return "—";
+    const s = Math.floor(ms / 1000);
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  };
+
+  const bothDone = opponentFinished;
+
+  // Calcul du verdict si les deux ont fini
+  let verdict = null;
+  let verdictColor = C.ink;
+  if (bothDone) {
+    if (myAbandoned && opponentAbandoned) {
+      verdict = "Double abandon"; verdictColor = C.inkSoft;
+    } else if (myAbandoned) {
+      verdict = `${opponentName} gagne par abandon`; verdictColor = C.amber;
+    } else if (opponentAbandoned) {
+      verdict = "Tu gagnes par abandon"; verdictColor = C.green;
+    } else if (mySteps < (opponentFinalSteps ?? Infinity)) {
+      verdict = "🏆 Tu gagnes"; verdictColor = C.green;
+    } else if (mySteps > (opponentFinalSteps ?? Infinity)) {
+      verdict = `${opponentName} gagne`; verdictColor = C.amber;
+    } else {
+      // Même nombre d'étapes : départage au temps
+      if (myTimeMs < (opponentFinalTimeMs ?? Infinity)) {
+        verdict = "🏆 Tu gagnes (au temps)"; verdictColor = C.green;
+      } else if (myTimeMs > (opponentFinalTimeMs ?? Infinity)) {
+        verdict = `${opponentName} gagne (au temps)`; verdictColor = C.amber;
+      } else {
+        verdict = "Égalité parfaite"; verdictColor = C.inkSoft;
+      }
+    }
+  }
+
+  const btnPrimary = {
+    background: C.ink, color: C.bg, border: "none",
+    borderRadius: 999, padding: "11px 22px",
+    fontSize: 12, letterSpacing: 1.3, textTransform: "uppercase",
+    cursor: "pointer", fontFamily: "inherit", fontWeight: 600,
+    boxShadow: "0 4px 14px rgba(15,23,41,0.18)",
+  };
+  const btnSecondary = {
+    ...glass, border: `1px solid ${C.hairline}`,
+    borderRadius: 999, padding: "11px 22px",
+    fontSize: 12, letterSpacing: 1.3, textTransform: "uppercase",
+    cursor: "pointer", fontFamily: "inherit", fontWeight: 600, color: C.ink,
+  };
+
+  return (
+    <div style={{ textAlign: "center", paddingTop: 8, position: "relative" }}>
+      <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkMute, marginBottom: 12, fontWeight: 600 }}>Versus</div>
+
+      {bothDone ? (
+        <>
+          <div style={{ fontWeight: 800, fontSize: 32, lineHeight: 1.05, color: verdictColor, marginBottom: 24, letterSpacing: -1.2 }}>
+            {verdict}
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+            <VersusPlayerCard
+              name={myName} isMe
+              steps={mySteps} timeMs={myTimeMs}
+              abandoned={myAbandoned} hintsUsed={myHintsUsed}
+              winner={!myAbandoned && (
+                opponentAbandoned ||
+                mySteps < (opponentFinalSteps ?? Infinity) ||
+                (mySteps === (opponentFinalSteps ?? Infinity) && myTimeMs < (opponentFinalTimeMs ?? Infinity))
+              )}
+              themeColors={C} glass={glass} />
+            <VersusPlayerCard
+              name={opponentName}
+              steps={opponentFinalSteps ?? opponentSteps}
+              timeMs={opponentFinalTimeMs}
+              abandoned={opponentAbandoned}
+              winner={!opponentAbandoned && !myAbandoned && (
+                (opponentFinalSteps ?? Infinity) < mySteps ||
+                ((opponentFinalSteps ?? Infinity) === mySteps && (opponentFinalTimeMs ?? Infinity) < myTimeMs)
+              )}
+              themeColors={C} glass={glass} />
+          </div>
+
+          {optimalSteps != null && (
+            <div style={{ ...glass, borderRadius: 14, padding: "10px 14px", marginBottom: 20,
+              fontSize: 12, color: C.inkSoft, fontWeight: 600 }}>
+              Chemin optimal : <strong style={{ color: C.ink }}>{optimalSteps} étape{optimalSteps > 1 ? "s" : ""}</strong>
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          <div style={{ fontWeight: 800, fontSize: 30, lineHeight: 1.1, color: myAbandoned ? C.amber : C.green, marginBottom: 10, letterSpacing: -1.2 }}>
+            {myAbandoned ? "Tu as abandonné" : "Tu as fini !"}
+          </div>
+          <div style={{ fontSize: 13, color: C.inkSoft, marginBottom: 22, fontWeight: 500 }}>
+            {myAbandoned ? "On attend la fin de la partie…" : `En attente de ${opponentName}…`}
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+            <VersusPlayerCard
+              name={myName} isMe done
+              steps={mySteps} timeMs={myTimeMs}
+              abandoned={myAbandoned} hintsUsed={myHintsUsed}
+              themeColors={C} glass={glass} />
+            <VersusPlayerCard
+              name={opponentName}
+              steps={opponentSteps}
+              inProgress
+              abandoned={opponentAbandoned}
+              themeColors={C} glass={glass} />
+          </div>
+        </>
+      )}
+
+      <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap", marginTop: 10 }}>
+        <button onClick={onExit} style={btnPrimary}>Menu</button>
+      </div>
+    </div>
+  );
+}
+
+function VersusPlayerCard({ name, isMe, steps, timeMs, abandoned, hintsUsed, winner, done, inProgress, themeColors, glass }) {
+  const C = themeColors;
+  const formatTime = (ms) => {
+    if (ms == null) return "—";
+    const s = Math.floor(ms / 1000);
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  };
+  return (
+    <div style={{ ...glass, borderRadius: 16, padding: "14px 16px",
+      border: winner ? `1.5px solid ${C.green}` : `1px solid ${C.hairline}`,
+      boxShadow: winner ? `0 0 0 2px ${C.green}30, 0 0 24px ${C.green}20` : "none",
+      display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+      <div style={{ textAlign: "left", flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", color: C.inkMute, fontWeight: 600 }}>
+          {isMe ? "Toi" : "Adversaire"}
+        </div>
+        <div style={{ fontSize: 17, fontWeight: 800, color: C.ink, letterSpacing: -0.5,
+          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{name}</div>
+      </div>
+      <div style={{ textAlign: "right", flexShrink: 0 }}>
+        {abandoned ? (
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.amber, letterSpacing: 1, textTransform: "uppercase" }}>Abandon</div>
+        ) : inProgress ? (
+          <>
+            <div style={{ fontSize: 15, fontWeight: 800, color: C.ink, fontVariantNumeric: "tabular-nums" }}>{steps ?? 0} ét.</div>
+            <div style={{ fontSize: 10, color: C.inkMute, fontWeight: 600, letterSpacing: 1 }}>en cours…</div>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize: 15, fontWeight: 800, color: C.ink, fontVariantNumeric: "tabular-nums" }}>{steps ?? 0} ét.</div>
+            <div style={{ fontSize: 11, color: C.inkSoft, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{formatTime(timeMs)}{hintsUsed > 0 ? ` · ${hintsUsed} indice${hintsUsed > 1 ? "s" : ""}` : ""}</div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function CustomScreen({ onBack, onStart, themeColors, glass, glassDark }) {
   const C = themeColors;
   const [start, setStart] = useState(null);
@@ -3040,12 +3411,14 @@ function VersusJoinScreen({ code, onBack, onJoined, themeColors, glass, glassDar
   );
 }
 
-function VersusLobbyScreen({ code, onBack, onStart, themeColors, glass, glassDark }) {
+function VersusLobbyScreen({ code, onBack, onStartGame, themeColors, glass, glassDark }) {
   const C = themeColors;
   const [match, setMatch] = useState(null);
   const [players, setPlayers] = useState([]);
   const [error, setError] = useState(null);
   const [shareStatus, setShareStatus] = useState(null);
+  const [starting, setStarting] = useState(false);
+  const startedRef = useRef(false);
 
   const myToken = useMemo(() => getPlayerToken(), []);
   const me = players.find(p => p.player_token === myToken);
@@ -3094,6 +3467,29 @@ function VersusLobbyScreen({ code, onBack, onStart, themeColors, glass, glassDar
     };
   }, [code]);
 
+  // Auto-démarre le jeu quand le match passe en "playing"
+  // (déclenché pour J1 par son click, pour J2 par l'echo realtime)
+  useEffect(() => {
+    if (!match) return;
+    if (match.status !== "playing") return;
+    if (startedRef.current) return;
+    startedRef.current = true;
+    onStartGame(match);
+  }, [match?.status, onStartGame]);
+
+  async function handleStart() {
+    if (!match || starting) return;
+    setStarting(true);
+    try {
+      await startMatch(match.id);
+      // Le useEffect ci-dessus déclenchera onStartGame via l'echo realtime
+    } catch (e) {
+      console.error(e);
+      setError("Erreur au lancement.");
+      setStarting(false);
+    }
+  }
+
   const shareUrl = `${window.location.origin}${window.location.pathname}?versus=${code}`;
 
   function copyLink() {
@@ -3135,8 +3531,8 @@ function VersusLobbyScreen({ code, onBack, onStart, themeColors, glass, glassDar
   return (
     <div style={{ minHeight: "100vh", padding: "70px 20px 40px", maxWidth: 480, margin: "0 auto" }}>
       <header style={{ display: "flex", alignItems: "center", marginBottom: 28 }}>
-        <button onClick={onBack} style={{ ...glass, borderRadius: 999, padding: "9px 14px", cursor: "pointer",
-          fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: C.ink, fontWeight: 600, border: "none" }}>← Quitter</button>
+        <button onClick={onBack} disabled={starting} style={{ ...glass, borderRadius: 999, padding: "9px 14px", cursor: starting ? "not-allowed" : "pointer",
+          fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: C.ink, fontWeight: 600, border: "none", opacity: starting ? 0.5 : 1 }}>← Quitter</button>
       </header>
 
       <div style={{ marginBottom: 28, textAlign: "center" }}>
@@ -3188,12 +3584,13 @@ function VersusLobbyScreen({ code, onBack, onStart, themeColors, glass, glassDar
       {/* Action principale */}
       {bothReady ? (
         iAmCreator ? (
-          <button onClick={onStart}
+          <button onClick={handleStart} disabled={starting}
             style={{ ...glassDark, borderRadius: 999, padding: "14px 22px",
               fontSize: 13, letterSpacing: 1.3, textTransform: "uppercase",
-              cursor: "pointer", fontFamily: "inherit", fontWeight: 700,
-              border: "none", width: "100%" }}>
-            Démarrer le défi
+              cursor: starting ? "not-allowed" : "pointer", fontFamily: "inherit", fontWeight: 700,
+              border: "none", width: "100%",
+              opacity: starting ? 0.5 : 1 }}>
+            {starting ? "Lancement…" : "Démarrer le défi"}
           </button>
         ) : (
           <div style={{ textAlign: "center", fontSize: 12, color: C.inkSoft, fontWeight: 500, padding: "12px 0" }}>
@@ -3207,10 +3604,6 @@ function VersusLobbyScreen({ code, onBack, onStart, themeColors, glass, glassDar
             : "Partie créée. Attendons le démarrage…"}
         </div>
       )}
-
-      <div style={{ marginTop: 28, textAlign: "center", fontSize: 11, color: C.inkMute, fontWeight: 500, lineHeight: 1.5 }}>
-        ⚡ Le mode Versus complet (jeu en temps réel, comparaison des scores) arrive très bientôt.
-      </div>
     </div>
   );
 }
