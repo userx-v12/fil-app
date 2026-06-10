@@ -43,15 +43,15 @@ const LANGUAGES = {
 };
 
 const DIFFICULTIES = {
-  random: { label: "Aléatoire", sub: "Niveau au hasard",     range: null },
-  easy:   { label: "Facile",    sub: "2 à 3 étapes",         range: [2, 3] },
-  medium: { label: "Moyen",     sub: "3 à 4 étapes",         range: [3, 4] },
-  hard:   { label: "Difficile", sub: "5 étapes ou plus",     range: [5, 99] },
+  random: { label: "Aléatoire", sub: "Niveau au hasard",  range: null },
+  easy:   { label: "Facile",    sub: "1 à 2 étapes",      range: [1, 2] },
+  medium: { label: "Moyen",     sub: "3 à 4 étapes",      range: [3, 4] },
+  hard:   { label: "Difficile", sub: "5 étapes ou plus",  range: [5, 99] },
 };
 
 const MODES = {
-  mix:   { label: "Mix",    sub: "Films + Séries",    types: ["movie", "tv"] },
   movie: { label: "Films",  sub: "Cinéma uniquement", types: ["movie"] },
+  mix:   { label: "Mix",    sub: "Films + Séries",    types: ["movie", "tv"] },
   tv:    { label: "Séries", sub: "TV uniquement",     types: ["tv"] },
 };
 
@@ -72,7 +72,7 @@ const DEFAULT_PREFS = {
   includeGenres: [],
   excludeGenres: [16, 99],
   eras: [],
-  minRating: 0,
+  minRating: 7,
 };
 
 const RED = "#dc2626";
@@ -83,9 +83,17 @@ const CAST_DISPLAY_DEFAULT = 30;  // Cast affiché par défaut dans le picker, l
 
 function categorizeDifficulty(optimalSteps) {
   if (optimalSteps === null || optimalSteps === undefined) return null;
-  if (optimalSteps <= 3) return "easy";
+  if (optimalSteps <= 2) return "easy";
   if (optimalSteps <= 4) return "medium";
   return "hard";
+}
+
+// Pondération aléatoire : Facile et Moyen plus probables que Difficile (qui galère à trouver)
+function pickWeightedDifficulty() {
+  const r = Math.random();
+  if (r < 0.40) return "easy";    // 40%
+  if (r < 0.80) return "medium";  // 40%
+  return "hard";                  // 20%
 }
 
 // Helper : clé composite "id:type" pour identifier une œuvre de façon unique
@@ -115,6 +123,7 @@ const LS_PREFS = "fil-prefs-v6";
 const LS_THEME = "fil-theme";
 const LS_GAMES_PLAYED = "fil-games-played";
 const LS_INFO_SEEN = "fil-info-seen";
+const LS_USER_PRESET = "fil-user-preset";  // Snapshot des prefs sauvegardé par le user
 
 function loadPrefs() {
   try {
@@ -139,6 +148,22 @@ function incrementGamesPlayed() {
 }
 function loadInfoSeen() { try { return localStorage.getItem(LS_INFO_SEEN) === "1"; } catch { return false; } }
 function markInfoSeen() { try { localStorage.setItem(LS_INFO_SEEN, "1"); } catch {} }
+
+function saveUserPreset(prefs) {
+  try { localStorage.setItem(LS_USER_PRESET, JSON.stringify(prefs)); return true; }
+  catch { return false; }
+}
+function loadUserPreset() {
+  try {
+    const raw = localStorage.getItem(LS_USER_PRESET);
+    if (!raw) return null;
+    return { ...DEFAULT_PREFS, ...JSON.parse(raw) };
+  } catch { return null; }
+}
+function hasUserPreset() {
+  try { return !!localStorage.getItem(LS_USER_PRESET); }
+  catch { return false; }
+}
 
 // =========================================================================
 // URL SHARING
@@ -307,18 +332,24 @@ async function searchMovies(query, limit = 20) {
   return data;
 }
 
-async function getCandidatePool(prefs, limit = 500) {
+async function getCandidatePool(prefs, limit = 500, forHard = false) {
+  // Mode Difficile : pool élargi (popularity ≥ 10 au lieu de 20, jusqu'à 1500 résultats)
+  // pour augmenter les chances de trouver des paires éloignées (5+ étapes)
+  const minPop = forHard ? 10 : 20;
   // Quand les filtres genres sont actifs, on élargit le pool SQL pour préserver la variété
   // (le filtrage genres se fait côté JS car les genres sont en JSONB sans index)
   const filterMode = prefs.filterMode || "exclude";
   const includeActive = filterMode === "include" && (prefs.includeGenres?.length || 0) > 0;
   const heavyExclude = filterMode === "exclude" && (prefs.excludeGenres?.length || 0) > 3;
-  const sqlLimit = (includeActive || heavyExclude) ? 2000 : limit;
+  let sqlLimit;
+  if (forHard) sqlLimit = 1500;
+  else if (includeActive || heavyExclude) sqlLimit = 2000;
+  else sqlLimit = limit;
 
   let q = supabase
     .from("works")
     .select("id, type, title, year, poster_path, popularity, original_language, genre_ids")
-    .gte("popularity", 20)
+    .gte("popularity", minPop)
     .order("popularity", { ascending: false })
     .limit(sqlLimit);
 
@@ -366,8 +397,8 @@ async function getCandidatePool(prefs, limit = 500) {
   }
 }
 
-async function pickRandomPair(prefs) {
-  const pool = await getCandidatePool(prefs, 500);
+async function pickRandomPair(prefs, forHard = false) {
+  const pool = await getCandidatePool(prefs, 500, forHard);
   if (!pool || pool.length < 2) {
     throw new Error("Trop peu d'œuvres avec ces filtres. Élargis tes critères.");
   }
@@ -378,6 +409,17 @@ async function pickRandomPair(prefs) {
     b = pool[Math.floor(Math.random() * pool.length)];
   }
   return { start: a, end: b };
+}
+
+// Pour le refresh sélectif : tire UN nouveau partenaire pour un film déjà fixé.
+async function pickPartnerFor(fixed, prefs, forHard = false) {
+  const pool = await getCandidatePool(prefs, 500, forHard);
+  if (!pool || pool.length < 1) {
+    throw new Error("Trop peu d'œuvres avec ces filtres.");
+  }
+  const candidates = pool.filter(p => !(p.id === fixed.id && p.type === fixed.type));
+  if (candidates.length < 1) throw new Error("Aucun partenaire possible.");
+  return candidates[Math.floor(Math.random() * candidates.length)];
 }
 
 // =========================================================================
@@ -762,7 +804,17 @@ function InfoModal({ onClose, themeColors, glass, glassDark }) {
           <Rule num="4" text="Moins d'étapes = meilleur score" C={C} />
         </div>
 
-        <div style={{ marginTop: 22, paddingTop: 18, borderTop: `1px solid ${C.hairline}`,
+        <div style={{ marginTop: 22, paddingTop: 18, borderTop: `1px solid ${C.hairline}` }}>
+          <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, marginBottom: 12, fontWeight: 600 }}>Infos pratiques</div>
+          <p style={{ fontSize: 13, lineHeight: 1.6, color: C.ink, margin: "0 0 10px", fontWeight: 500 }}>
+            <strong>Comptage des étapes</strong> : une étape = un acteur puis un nouveau film. Le film de départ ne compte pas.
+          </p>
+          <p style={{ fontSize: 12, lineHeight: 1.5, color: C.inkSoft, margin: 0, fontStyle: "italic" }}>
+            Exemple : Titanic → DiCaprio → Inception = 1 étape.
+          </p>
+        </div>
+
+        <div style={{ marginTop: 18, paddingTop: 14, borderTop: `1px solid ${C.hairline}`,
           fontSize: 12, color: C.inkSoft, lineHeight: 1.5 }}>
           💡 <strong>Astuce</strong> : utilise le bouton <strong>indice</strong> (ampoule) si tu es bloqué.
           Il met en évidence l'acteur ou le film à choisir.
@@ -883,15 +935,16 @@ export default function App() {
     clearChallengeFromURL();
     setError(null);
 
-    // En mode "Aléatoire", on pioche secrètement easy/medium/hard pour préserver la surprise
+    // En mode "Aléatoire", on pioche secrètement easy/medium/hard avec pondération
+    // (Facile et Moyen 40% chacun, Difficile 20%) pour garder un bon rythme de jeu
     const isRandomMode = prefs.difficulty === "random";
     let target = prefs.difficulty;
     if (isRandomMode) {
-      const pool = ["easy", "medium", "hard"];
-      target = pool[Math.floor(Math.random() * pool.length)];
+      target = pickWeightedDifficulty();
     }
     const targetRange = DIFFICULTIES[target]?.range;
     const targetLabel = DIFFICULTIES[target]?.label || "défi";
+    const forHard = target === "hard";
 
     setLoadingChallenge(true);
     setLoadingLabel(isRandomMode
@@ -903,7 +956,7 @@ export default function App() {
 
     try {
       for (let attempt = 0; attempt < MAX_TRIES; attempt++) {
-        const { start, end } = await pickRandomPair(prefs);
+        const { start, end } = await pickRandomPair(prefs, forHard);
         const optimal = await findOptimalPath(start, end, 5);
         if (!optimal || optimal.length < 3) continue;
 
@@ -939,6 +992,68 @@ export default function App() {
         setLoadingChallenge(false);
       } else {
         throw new Error("Aucun défi trouvé. Élargis tes critères.");
+      }
+    } catch (e) {
+      setError(e.message);
+      setLoadingChallenge(false);
+    }
+  }
+
+  // Refresh sélectif : change un seul des deux films (Départ OU Arrivée), garde l'autre.
+  // Cherche un nouveau partenaire qui matche la difficulté du défi en cours.
+  async function refreshOnePart(which) {
+    if (!challenge) return;
+    const fixed = which === "start" ? challenge.end : challenge.start;
+    const target = challenge.difficultyUsed && DIFFICULTIES[challenge.difficultyUsed]?.range
+      ? challenge.difficultyUsed
+      : pickWeightedDifficulty();
+    const targetRange = DIFFICULTIES[target]?.range;
+    const targetLabel = DIFFICULTIES[target]?.label || "défi";
+    const forHard = target === "hard";
+
+    setLoadingChallenge(true);
+    setLoadingLabel(`Nouveau ${which === "start" ? "départ" : "arrivée"}…`);
+    setError(null);
+
+    const MAX_TRIES = 10;
+    let lastAttempt = null;
+
+    try {
+      for (let attempt = 0; attempt < MAX_TRIES; attempt++) {
+        const newOne = await pickPartnerFor(fixed, prefs, forHard);
+        const start = which === "start" ? newOne : fixed;
+        const end   = which === "start" ? fixed  : newOne;
+        const optimal = await findOptimalPath(start, end, 5);
+        if (!optimal || optimal.length < 3) continue;
+
+        const steps = Math.floor((optimal.length - 1) / 2);
+        lastAttempt = { start, end, optimal };
+
+        if (!targetRange || (steps >= targetRange[0] && steps <= targetRange[1])) {
+          setChallenge({
+            start, end, optimal,
+            optimalLoading: false,
+            modeUsed: prefs.mode,
+            difficultyUsed: target,
+          });
+          setGameKey(k => k + 1);
+          setLoadingChallenge(false);
+          return;
+        }
+      }
+      if (lastAttempt) {
+        setError(`Pas de remplacement ${targetLabel.toLowerCase()} trouvé, voici le plus proche.`);
+        setChallenge({
+          start: lastAttempt.start, end: lastAttempt.end,
+          optimal: lastAttempt.optimal,
+          optimalLoading: false,
+          modeUsed: prefs.mode,
+          difficultyUsed: target,
+        });
+        setGameKey(k => k + 1);
+        setLoadingChallenge(false);
+      } else {
+        throw new Error("Aucun remplacement trouvé.");
       }
     } catch (e) {
       setError(e.message);
@@ -1014,6 +1129,7 @@ export default function App() {
               onExit={() => { clearChallengeFromURL(); setScreen("menu"); }}
               onReplay={startRandom} onRetry={retrySame}
               onFinished={onGameFinished}
+              onRefreshPart={refreshOnePart}
               themeColors={C} glass={glass} glassDark={glassDark} theme={theme} />
       )}
       {screen === "custom" && <CustomScreen onBack={() => setScreen("menu")} onStart={startCustom}
@@ -1055,7 +1171,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
     { key: "play", label: "Jouer", sub: "Défi aléatoire", action: onPlay, primary: true },
     { key: "custom", label: "Sur Mesure", sub: "Choisis ton défi", action: () => onNavigate("custom") },
     { key: "multi", label: "Versus", sub: "Affronte un ami", action: () => onNavigate("multi") },
-    { key: "options", label: "Options", sub: "Langues, genres, époques", action: () => onNavigate("options") },
+    { key: "options", label: "Options", sub: "Difficulté, genres, époques", action: () => onNavigate("options") },
   ];
 
   return (
@@ -1084,7 +1200,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         )}
       </div>
 
-      <div style={{ marginBottom: 14 }}>
+      <div style={{ marginBottom: 20 }}>
         <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 600, marginBottom: 8, paddingLeft: 4 }}>Mode</div>
         <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
           {Object.entries(MODES).map(([key, m]) => {
@@ -1100,24 +1216,6 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
           })}
         </div>
         <div style={{ fontSize: 11, color: C.inkMute, marginTop: 6, paddingLeft: 4, fontWeight: 500 }}>{MODES[prefs.mode].sub}</div>
-      </div>
-
-      <div style={{ marginBottom: 20 }}>
-        <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 600, marginBottom: 8, paddingLeft: 4 }}>Difficulté</div>
-        <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
-          {Object.entries(DIFFICULTIES).map(([key, d]) => {
-            const active = prefs.difficulty === key;
-            return (
-              <button key={key} onClick={() => setPrefs(p => ({ ...p, difficulty: key }))}
-                style={{ flex: 1, padding: "9px 4px", borderRadius: 999, border: "none",
-                  background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
-                  fontFamily: "inherit", fontSize: 11, fontWeight: 600,
-                  letterSpacing: 0.4, textTransform: "uppercase",
-                  cursor: "pointer", transition: "background .15s" }}>{d.label}</button>
-            );
-          })}
-        </div>
-        <div style={{ fontSize: 11, color: C.inkMute, marginTop: 6, paddingLeft: 4, fontWeight: 500 }}>{DIFFICULTIES[prefs.difficulty].sub}</div>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1 }}>
@@ -1136,7 +1234,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.6</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.7</div>
     </div>
   );
 }
@@ -1150,6 +1248,8 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
   const allLangs = Object.keys(LANGUAGES);
   const allGenres = Object.keys(GENRES);
   const allLangsChecked = prefs.languages.length === allLangs.length;
+  const [presetExists, setPresetExists] = useState(hasUserPreset());
+  const [actionFeedback, setActionFeedback] = useState(null); // "saved" | "restored"
 
   function toggleAllLangs() { setPrefs(p => ({ ...p, languages: allLangsChecked ? ["en"] : allLangs })); }
   function toggleLang(code) {
@@ -1183,7 +1283,21 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
     });
   }
   function resetDefaults() {
-    setPrefs(p => ({ ...p, languages: ["en", "fr"], filterMode: "exclude", includeGenres: [], excludeGenres: [16, 99], eras: [], minRating: 0 }));
+    setPrefs({ ...DEFAULT_PREFS });
+  }
+  function savePreset() {
+    saveUserPreset(prefs);
+    setPresetExists(true);
+    setActionFeedback("saved");
+    setTimeout(() => setActionFeedback(null), 2000);
+  }
+  function restorePreset() {
+    const p = loadUserPreset();
+    if (p) {
+      setPrefs(p);
+      setActionFeedback("restored");
+      setTimeout(() => setActionFeedback(null), 2000);
+    }
   }
 
   return (
@@ -1195,6 +1309,24 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
       <div style={{ marginBottom: 28 }}>
         <div style={{ fontSize: 10, letterSpacing: 4, textTransform: "uppercase", color: C.inkSoft, marginBottom: 10, fontWeight: 600 }}>Options</div>
         <h2 style={{ fontWeight: 800, fontSize: 36, margin: 0, letterSpacing: -1.5, lineHeight: 1, color: C.ink }}>Réglages</h2>
+      </div>
+
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 12 }}>Difficulté</div>
+        <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
+          {Object.entries(DIFFICULTIES).map(([key, d]) => {
+            const active = prefs.difficulty === key;
+            return (
+              <button key={key} onClick={() => setPrefs(p => ({ ...p, difficulty: key }))}
+                style={{ flex: 1, padding: "9px 4px", borderRadius: 999, border: "none",
+                  background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
+                  fontFamily: "inherit", fontSize: 11, fontWeight: 600,
+                  letterSpacing: 0.4, textTransform: "uppercase",
+                  cursor: "pointer", transition: "background .15s" }}>{d.label}</button>
+            );
+          })}
+        </div>
+        <div style={{ fontSize: 11, color: C.inkMute, marginTop: 6, fontWeight: 500 }}>{DIFFICULTIES[prefs.difficulty].sub}</div>
       </div>
 
       <div style={{ marginBottom: 28 }}>
@@ -1266,7 +1398,7 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
           }
         `}</style>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-          <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Note minimale TMDb</div>
+          <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Note minimale</div>
           {(prefs.minRating || 0) > 0 && (
             <button onClick={() => setPrefs(p => ({ ...p, minRating: 0 }))}
               style={{ background: "none", border: "none", color: C.ink, fontFamily: "inherit",
@@ -1274,21 +1406,17 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
                 cursor: "pointer", opacity: 0.75 }}>Désactiver</button>
           )}
         </div>
-        <div style={{ fontSize: 22, fontWeight: 800, color: C.ink, letterSpacing: -0.8, marginTop: 8 }}>
-          {(prefs.minRating || 0) > 0 ? `≥ ${prefs.minRating.toFixed(1)}` : "Aucun filtre"}
+        <div style={{ marginTop: 8, marginBottom: 4, minHeight: 28, display: "flex", alignItems: "center" }}>
+          {(prefs.minRating || 0) > 0
+            ? <StarsDisplay stars={(prefs.minRating || 0) / 2} themeColors={C} size={22} />
+            : <span style={{ fontSize: 14, fontWeight: 600, color: C.inkMute }}>Aucun filtre</span>}
         </div>
-        <input type="range" min="0" max="9" step="0.5"
+        <input type="range" min="0" max="9" step="1"
           value={prefs.minRating || 0}
-          onChange={(e) => setPrefs(p => ({ ...p, minRating: parseFloat(e.target.value) }))}
+          onChange={(e) => setPrefs(p => ({ ...p, minRating: parseInt(e.target.value, 10) }))}
           className="rating-slider" />
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: C.inkMute, fontWeight: 600, letterSpacing: 1 }}>
-          <span>0</span>
-          <span>5</span>
-          <span>7</span>
-          <span>9</span>
-        </div>
         <div style={{ fontSize: 11, color: C.inkMute, marginTop: 10, fontWeight: 500, lineHeight: 1.4 }}>
-          Ne tire que des œuvres dont la note moyenne TMDb dépasse ce seuil. Utile pour éviter les films oubliables.
+          Ne tire que des œuvres dont la note moyenne TMDb dépasse ce seuil. Évite les films oubliables.
         </div>
       </div>
 
@@ -1375,14 +1503,81 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
         })()}
       </div>
 
-      <button onClick={resetDefaults}
-        style={{ ...glass, borderRadius: 999, padding: "11px 22px",
-          fontSize: 11, letterSpacing: 1.3, textTransform: "uppercase",
-          cursor: "pointer", fontFamily: "inherit", fontWeight: 600,
-          color: C.ink, border: `1px solid ${C.hairline}`, width: "100%", marginTop: 10 }}>
-        Réinitialiser les valeurs par défaut
-      </button>
+      <div style={{ marginTop: 28, paddingTop: 20, borderTop: `1px solid ${C.hairline}`, display: "flex", flexDirection: "column", gap: 10 }}>
+        <button onClick={savePreset}
+          style={{ ...glass, borderRadius: 999, padding: "12px 22px",
+            background: actionFeedback === "saved" ? C.green : C.glassBg,
+            color: actionFeedback === "saved" ? "#fff" : C.ink,
+            fontSize: 11, letterSpacing: 1.3, textTransform: "uppercase",
+            cursor: "pointer", fontFamily: "inherit", fontWeight: 700,
+            border: `1px solid ${actionFeedback === "saved" ? C.green : C.hairline}`,
+            transition: "all .25s", width: "100%" }}>
+          {actionFeedback === "saved" ? "✓ Préférences enregistrées" : "Enregistrer mes préférences"}
+        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={restorePreset} disabled={!presetExists}
+            style={{ ...glass, borderRadius: 999, padding: "11px 14px",
+              background: actionFeedback === "restored" ? C.green + "30" : C.glassBg,
+              color: actionFeedback === "restored" ? C.green : C.ink,
+              fontSize: 10, letterSpacing: 1.2, textTransform: "uppercase",
+              cursor: presetExists ? "pointer" : "not-allowed",
+              opacity: presetExists ? 1 : 0.4,
+              fontFamily: "inherit", fontWeight: 600,
+              border: `1px solid ${C.hairline}`, flex: 1 }}>
+            {actionFeedback === "restored" ? "✓ Restauré" : "Restaurer mes préférences"}
+          </button>
+          <button onClick={resetDefaults}
+            style={{ ...glass, borderRadius: 999, padding: "11px 14px",
+              fontSize: 10, letterSpacing: 1.2, textTransform: "uppercase",
+              cursor: "pointer", fontFamily: "inherit", fontWeight: 600,
+              color: C.ink, border: `1px solid ${C.hairline}`, flex: 1 }}>
+            Valeurs par défaut
+          </button>
+        </div>
+      </div>
     </div>
+  );
+}
+
+// Composant Étoiles : value = nombre d'étoiles (0 à 5, demi acceptée)
+function StarsDisplay({ stars, themeColors, size = 18 }) {
+  const C = themeColors;
+  const items = [];
+  for (let i = 0; i < 5; i++) {
+    const fill = Math.min(1, Math.max(0, stars - i)); // 0, 0.5 ou 1
+    items.push(<Star key={i} fill={fill} size={size} color={C.ink} emptyColor={C.inkMute} />);
+  }
+  return <div style={{ display: "flex", gap: 3, alignItems: "center" }}>{items}</div>;
+}
+
+function Star({ fill, size, color, emptyColor }) {
+  // fill: 0 (vide), 0.5 (demi), 1 (pleine)
+  const path = "M12 2 L14.85 8.63 L22 9.27 L16.5 14.14 L18.18 21.02 L12 17.27 L5.82 21.02 L7.5 14.14 L2 9.27 L9.15 8.63 Z";
+  const gradientId = `star-grad-${fill}-${color.replace(/[^a-zA-Z0-9]/g, '')}`;
+  if (fill >= 1) {
+    return (
+      <svg width={size} height={size} viewBox="0 0 24 24" style={{ display: "block" }}>
+        <path d={path} fill={color} />
+      </svg>
+    );
+  }
+  if (fill >= 0.5) {
+    return (
+      <svg width={size} height={size} viewBox="0 0 24 24" style={{ display: "block" }}>
+        <defs>
+          <linearGradient id={gradientId}>
+            <stop offset="50%" stopColor={color} />
+            <stop offset="50%" stopColor={emptyColor} stopOpacity="0.3" />
+          </linearGradient>
+        </defs>
+        <path d={path} fill={`url(#${gradientId})`} stroke={color} strokeWidth="0.5" />
+      </svg>
+    );
+  }
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" style={{ display: "block" }}>
+      <path d={path} fill="none" stroke={emptyColor} strokeWidth="1.5" />
+    </svg>
   );
 }
 
@@ -1390,7 +1585,7 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
 // GAME
 // =========================================================================
 
-function Game({ challenge, onExit, onReplay, onRetry, onFinished, themeColors, glass, glassDark, theme }) {
+function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart, themeColors, glass, glassDark, theme }) {
   const C = themeColors;
   const [path, setPath] = useState([{ type: "movie", data: challenge.start }]);
   const [castOfCurrent, setCastOfCurrent] = useState(null);
@@ -1559,9 +1754,11 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, themeColors, g
       `}</style>
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 24 }}>
-        <Goal label="Départ" movie={challenge.start} themeColors={C} />
+        <Goal label="Départ" movie={challenge.start} themeColors={C}
+          onRefresh={path.length === 1 && onRefreshPart ? () => onRefreshPart("start") : null} />
         <div style={{ flex: 1, height: 1, background: C.hairline, marginTop: 56 }} />
-        <Goal label="Arrivée" movie={challenge.end} align="right" themeColors={C} />
+        <Goal label="Arrivée" movie={challenge.end} align="right" themeColors={C}
+          onRefresh={path.length === 1 && onRefreshPart ? () => onRefreshPart("end") : null} />
       </div>
       <Trail path={path} themeColors={C} glass={glass} />
       <div className="fadeUp" key={path.length + (selectedActor?.id || "")} style={{ marginTop: 24 }}>
@@ -1618,17 +1815,41 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, themeColors, g
           )}
         </div>
 
-        <button onClick={useHint} disabled={hintActive || challenge.optimalLoading || !hintAvailable}
-          title={challenge.optimalLoading ? "En cours…" : !hintAvailable ? "Disponible dans quelques secondes…" : "Indice"}
-          style={{ ...iconBtn(C),
-            background: hintActive ? C.green : C.iconBtnBg,
-            color: hintActive ? "#fff" : C.ink,
-            opacity: (challenge.optimalLoading || !hintAvailable) ? 0.35 : 1,
-            cursor: (challenge.optimalLoading || !hintAvailable) ? "not-allowed" : "pointer" }}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.5V17h8v-2.5A7 7 0 0 0 12 2z"/>
-          </svg>
-        </button>
+        <div style={{ position: "relative" }}>
+          {/* Ring de chargement : se dessine en 15s pendant l'attente */}
+          {!hintAvailable && !hintActive && !challenge.optimalLoading && (
+            <svg key={`hint-charge-${path.length}-${selectedActor?.id || "none"}`}
+              width="32" height="32" viewBox="0 0 32 32"
+              style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none", zIndex: 1 }}>
+              <style>{`
+                @keyframes hintCharge {
+                  from { stroke-dashoffset: 87.96; }
+                  to   { stroke-dashoffset: 0; }
+                }
+              `}</style>
+              <circle cx="16" cy="16" r="14" fill="none"
+                stroke={C.green} strokeWidth="2" strokeLinecap="round"
+                strokeDasharray="87.96"
+                style={{
+                  animation: "hintCharge 15s linear forwards",
+                  transform: "rotate(-90deg)",
+                  transformOrigin: "16px 16px",
+                  opacity: 0.7,
+                }} />
+            </svg>
+          )}
+          <button onClick={useHint} disabled={hintActive || challenge.optimalLoading || !hintAvailable}
+            title={challenge.optimalLoading ? "En cours…" : !hintAvailable ? "Disponible dans quelques secondes…" : "Indice"}
+            style={{ ...iconBtn(C),
+              background: hintActive ? C.green : C.iconBtnBg,
+              color: hintActive ? "#fff" : C.ink,
+              opacity: (challenge.optimalLoading || !hintAvailable) ? 0.35 : 1,
+              cursor: (challenge.optimalLoading || !hintAvailable) ? "not-allowed" : "pointer" }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.5V17h8v-2.5A7 7 0 0 0 12 2z"/>
+            </svg>
+          </button>
+        </div>
 
         <button onClick={() => onReplay && onReplay()} title="Nouvelle partie" style={iconBtn(C)}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
@@ -1690,12 +1911,32 @@ function Stat({ icon, value, label, valueColor, themeColors, glass }) {
   );
 }
 
-function Goal({ label, movie, align = "left", themeColors }) {
+function Goal({ label, movie, align = "left", themeColors, onRefresh }) {
   const C = themeColors;
   return (
     <div style={{ textAlign: align, maxWidth: 130, display: "flex", flexDirection: "column", alignItems: align === "right" ? "flex-end" : "flex-start" }}>
       <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkMute, marginBottom: 8, fontWeight: 600 }}>{label}</div>
-      <Poster movie={movie} size={80} rounded={10} themeColors={C} />
+      <div style={{ position: "relative" }}>
+        <Poster movie={movie} size={80} rounded={10} themeColors={C} />
+        {onRefresh && (
+          <button onClick={onRefresh} title={`Changer ${label.toLowerCase()}`}
+            style={{ position: "absolute", top: -6, [align === "right" ? "left" : "right"]: -6,
+              width: 26, height: 26, borderRadius: "50%",
+              background: C.ink, color: C.bg, border: `2px solid ${C.bg}`,
+              cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+              fontFamily: "inherit", padding: 0,
+              boxShadow: "0 2px 8px rgba(0,0,0,0.25)",
+              transition: "transform .15s" }}
+            onMouseEnter={(e) => e.currentTarget.style.transform = "scale(1.1) rotate(45deg)"}
+            onMouseLeave={(e) => e.currentTarget.style.transform = "scale(1) rotate(0deg)"}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="23 4 23 10 17 10"/>
+              <polyline points="1 20 1 14 7 14"/>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+            </svg>
+          </button>
+        )}
+      </div>
       <div style={{ fontWeight: 700, fontSize: 14, lineHeight: 1.15, letterSpacing: -0.4, color: C.ink, marginTop: 8 }}>{movie.title}</div>
       <div style={{ fontSize: 11, color: C.inkMute, marginTop: 2, fontWeight: 500 }}>{movie.year}</div>
       {isTv(movie) && <TvLabel themeColors={C} />}
