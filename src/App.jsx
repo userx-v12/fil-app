@@ -124,6 +124,8 @@ const LS_THEME = "fil-theme";
 const LS_GAMES_PLAYED = "fil-games-played";
 const LS_INFO_SEEN = "fil-info-seen";
 const LS_USER_PRESET = "fil-user-preset";  // Snapshot des prefs sauvegardé par le user
+const LS_PLAYER_TOKEN = "fil-player-token"; // Identifiant unique du joueur (anonyme, persistant)
+const LS_PLAYER_NAME  = "fil-player-name";  // Pseudo réutilisé entre les parties Versus
 
 function loadPrefs() {
   try {
@@ -163,6 +165,40 @@ function loadUserPreset() {
 function hasUserPreset() {
   try { return !!localStorage.getItem(LS_USER_PRESET); }
   catch { return false; }
+}
+
+// === VERSUS : identité anonyme du joueur ===
+function getPlayerToken() {
+  try {
+    let t = localStorage.getItem(LS_PLAYER_TOKEN);
+    if (!t) {
+      // Génère 32 bytes random en hex (64 chars)
+      const arr = new Uint8Array(32);
+      (window.crypto || window.msCrypto).getRandomValues(arr);
+      t = Array.from(arr, b => b.toString(16).padStart(2, "0")).join("");
+      localStorage.setItem(LS_PLAYER_TOKEN, t);
+    }
+    return t;
+  } catch { return "anon-" + Date.now() + "-" + Math.random().toString(36).slice(2); }
+}
+function getStoredPlayerName() {
+  try { return localStorage.getItem(LS_PLAYER_NAME) || ""; }
+  catch { return ""; }
+}
+function savePlayerName(name) {
+  try { localStorage.setItem(LS_PLAYER_NAME, name); } catch {}
+}
+
+// === VERSUS : code de partie (6 chiffres) ===
+function generateMatchCode() {
+  let code = "";
+  for (let i = 0; i < 6; i++) code += Math.floor(Math.random() * 10);
+  return code;
+}
+function formatMatchCode(code) {
+  // "482715" → "482 715"
+  if (!code || code.length !== 6) return code || "";
+  return code.slice(0, 3) + " " + code.slice(3);
 }
 
 // =========================================================================
@@ -206,6 +242,30 @@ function clearChallengeFromURL() {
   try {
     const url = new URL(window.location.href);
     url.searchParams.delete("challenge");
+    window.history.replaceState({}, "", url);
+  } catch {}
+}
+
+// === VERSUS : URL ?versus=XXXXXX ===
+function getVersusFromURL() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const v = params.get("versus");
+    if (!v || !/^\d{6}$/.test(v)) return null;
+    return v;
+  } catch { return null; }
+}
+function setVersusInURL(code) {
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.set("versus", code);
+    window.history.replaceState({}, "", url);
+  } catch {}
+}
+function clearVersusFromURL() {
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("versus");
     window.history.replaceState({}, "", url);
   } catch {}
 }
@@ -420,6 +480,116 @@ async function pickPartnerFor(fixed, prefs, forHard = false) {
   const candidates = pool.filter(p => !(p.id === fixed.id && p.type === fixed.type));
   if (candidates.length < 1) throw new Error("Aucun partenaire possible.");
   return candidates[Math.floor(Math.random() * candidates.length)];
+}
+
+// =========================================================================
+// API VERSUS
+// =========================================================================
+
+async function createMatch({ startWork, endWork, optimalSteps, difficulty }) {
+  // Génère un code unique (retry si collision, très rare avec 10^6 possibilités)
+  let code = null;
+  for (let i = 0; i < 5; i++) {
+    const candidate = generateMatchCode();
+    const { data } = await supabase.from("matches").select("id").eq("code", candidate).maybeSingle();
+    if (!data) { code = candidate; break; }
+  }
+  if (!code) throw new Error("Impossible de générer un code unique, réessaie.");
+
+  const { data, error } = await supabase
+    .from("matches")
+    .insert({
+      code,
+      start_id: startWork.id, start_type: startWork.type,
+      end_id: endWork.id,     end_type: endWork.type,
+      optimal_steps: optimalSteps,
+      difficulty,
+      status: "waiting",
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+async function getMatchByCode(code) {
+  const { data, error } = await supabase
+    .from("matches")
+    .select("*")
+    .eq("code", code)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+async function getMatchPlayers(matchId) {
+  const { data, error } = await supabase
+    .from("match_players")
+    .select("*")
+    .eq("match_id", matchId)
+    .order("slot", { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+async function joinMatch(matchId, playerName, slot) {
+  const token = getPlayerToken();
+
+  // Si ce token a déjà rejoint ce match (refresh page), on retourne le joueur existant
+  const { data: existing } = await supabase
+    .from("match_players")
+    .select("*")
+    .eq("match_id", matchId)
+    .eq("player_token", token)
+    .maybeSingle();
+  if (existing) return existing;
+
+  const { data, error } = await supabase
+    .from("match_players")
+    .insert({
+      match_id: matchId,
+      slot,
+      player_name: playerName,
+      player_token: token,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+async function startMatch(matchId) {
+  const { data, error } = await supabase
+    .from("matches")
+    .update({ status: "playing", started_at: new Date().toISOString() })
+    .eq("id", matchId)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+async function updatePlayerProgress(matchPlayerId, { currentPath, currentSteps, hintsUsed }) {
+  const update = {};
+  if (currentPath !== undefined) update.current_path = currentPath;
+  if (currentSteps !== undefined) update.current_steps = currentSteps;
+  if (hintsUsed !== undefined) update.hints_used = hintsUsed;
+  if (Object.keys(update).length === 0) return;
+  await supabase.from("match_players").update(update).eq("id", matchPlayerId);
+}
+
+async function finishPlayer(matchPlayerId, { finalSteps, finalTimeMs, abandoned, hintsUsed }) {
+  await supabase
+    .from("match_players")
+    .update({
+      finished: true,
+      abandoned: !!abandoned,
+      final_steps: finalSteps,
+      final_time_ms: finalTimeMs,
+      hints_used: hintsUsed,
+      finished_at: new Date().toISOString(),
+    })
+    .eq("id", matchPlayerId);
 }
 
 // =========================================================================
@@ -885,6 +1055,7 @@ export default function App() {
   const [prefs, setPrefs] = useState(loadPrefs);
   const [gamesPlayed, setGamesPlayed] = useState(loadGamesPlayed);
   const [showInfo, setShowInfo] = useState(false);
+  const [versusCode, setVersusCode] = useState(null); // Code de partie Versus en cours
 
   useEffect(() => { savePrefs(prefs); }, [prefs]);
   useEffect(() => { document.body.style.background = C.bg; saveTheme(theme); }, [theme, C.bg]);
@@ -897,6 +1068,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    // Détection des paramètres URL au mount (priorité versus > challenge)
+    const v = getVersusFromURL();
+    if (v) {
+      setVersusCode(v);
+      setScreen("versus-join");
+      return;
+    }
     const urlChallenge = getChallengeFromURL();
     if (urlChallenge) loadChallengeFromURL(urlChallenge);
   }, []);
@@ -1134,7 +1312,30 @@ export default function App() {
       )}
       {screen === "custom" && <CustomScreen onBack={() => setScreen("menu")} onStart={startCustom}
                                 themeColors={C} glass={glass} glassDark={glassDark} />}
-      {screen === "multi" && <MultiScreen onBack={() => setScreen("menu")} themeColors={C} glass={glass} />}
+      {screen === "multi" && <VersusScreen
+                                onBack={() => setScreen("menu")}
+                                onCreate={() => setScreen("versus-create")}
+                                onJoinManual={() => setScreen("versus-join-manual")}
+                                themeColors={C} glass={glass} glassDark={glassDark} />}
+      {screen === "versus-create" && <VersusCreateScreen
+                                onBack={() => setScreen("multi")}
+                                onCreated={(code) => { setVersusCode(code); setVersusInURL(code); setScreen("versus-lobby"); }}
+                                prefs={prefs} setPrefs={setPrefs}
+                                themeColors={C} glass={glass} glassDark={glassDark} />}
+      {screen === "versus-lobby" && versusCode && <VersusLobbyScreen
+                                code={versusCode}
+                                onBack={() => { clearVersusFromURL(); setVersusCode(null); setScreen("multi"); }}
+                                onStart={() => { /* Session 2 : démarrera le game */ }}
+                                themeColors={C} glass={glass} glassDark={glassDark} />}
+      {screen === "versus-join" && versusCode && <VersusJoinScreen
+                                code={versusCode}
+                                onBack={() => { clearVersusFromURL(); setVersusCode(null); setScreen("menu"); }}
+                                onJoined={() => setScreen("versus-lobby")}
+                                themeColors={C} glass={glass} glassDark={glassDark} />}
+      {screen === "versus-join-manual" && <VersusJoinManualScreen
+                                onBack={() => setScreen("multi")}
+                                onCodeReady={(code) => { setVersusCode(code); setVersusInURL(code); setScreen("versus-join"); }}
+                                themeColors={C} glass={glass} glassDark={glassDark} />}
       {screen === "options" && <OptionsScreen onBack={() => setScreen("menu")} prefs={prefs} setPrefs={setPrefs}
                                 themeColors={C} glass={glass} />}
       {screen === "account" && <AccountScreen onBack={() => setScreen("menu")} themeColors={C} glass={glass}
@@ -1234,7 +1435,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.7</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.8</div>
     </div>
   );
 }
@@ -2441,19 +2642,598 @@ function Slot({ label, movie, active, onClick, onClear, themeColors, glass }) {
   );
 }
 
-function MultiScreen({ onBack, themeColors, glass }) {
+// =========================================================================
+// VERSUS — Écrans
+// =========================================================================
+
+function VersusScreen({ onBack, onCreate, onJoinManual, themeColors, glass, glassDark }) {
   const C = themeColors;
+  const btnPrimary = {
+    ...glassDark, borderRadius: 18, padding: "20px 22px",
+    display: "flex", alignItems: "center", gap: 16, cursor: "pointer", fontFamily: "inherit",
+    textAlign: "left", border: "none", width: "100%",
+  };
+  const btnSecondary = {
+    ...glass, borderRadius: 18, padding: "20px 22px",
+    display: "flex", alignItems: "center", gap: 16, cursor: "pointer", fontFamily: "inherit",
+    textAlign: "left", color: C.ink, width: "100%",
+  };
   return (
-    <div style={{ minHeight: "100vh", padding: "70px 20px 20px", maxWidth: 480, margin: "0 auto" }}>
-      <header style={{ display: "flex", alignItems: "center", marginBottom: 48 }}>
+    <div style={{ minHeight: "100vh", padding: "70px 20px 40px", maxWidth: 480, margin: "0 auto" }}>
+      <header style={{ display: "flex", alignItems: "center", marginBottom: 28 }}>
         <button onClick={onBack} style={{ ...glass, borderRadius: 999, padding: "9px 14px", cursor: "pointer",
           fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: C.ink, fontWeight: 600, border: "none" }}>← Menu</button>
       </header>
-      <div style={{ ...glass, borderRadius: 22, padding: 40, textAlign: "center" }}>
-        <div style={{ display: "flex", justifyContent: "center", marginBottom: 16, opacity: .25 }}><LogoMark size={40} color={C.ink} /></div>
-        <div style={{ fontWeight: 800, fontSize: 28, marginBottom: 8, letterSpacing: -1, color: C.ink }}>Bientôt disponible</div>
-        <div style={{ fontSize: 13, color: C.inkSoft, lineHeight: 1.5, fontWeight: 500 }}>
-          Le mode Versus arrive bientôt :<br />duels en temps réel, défis partagés, classements entre amis.
+      <div style={{ marginBottom: 32 }}>
+        <div style={{ fontSize: 10, letterSpacing: 4, textTransform: "uppercase", color: C.inkSoft, marginBottom: 10, fontWeight: 600 }}>Versus</div>
+        <h2 style={{ fontWeight: 800, fontSize: 36, margin: 0, letterSpacing: -1.5, lineHeight: 1, color: C.ink }}>Affronte un ami</h2>
+        <p style={{ fontSize: 13, color: C.inkSoft, marginTop: 12, lineHeight: 1.5, fontWeight: 500 }}>
+          Deux joueurs, le même défi. Le plus rapide ou le plus malin gagne.
+        </p>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <button onClick={onCreate} style={btnPrimary}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 18, letterSpacing: -0.5, marginBottom: 4 }}>Créer une partie</div>
+            <div style={{ fontSize: 11, opacity: .7, letterSpacing: .3, fontWeight: 400 }}>Invite ton ami avec un code</div>
+          </div>
+          <div style={{ fontSize: 15, opacity: .6 }}>→</div>
+        </button>
+        <button onClick={onJoinManual} style={btnSecondary}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 18, letterSpacing: -0.5, marginBottom: 4 }}>Rejoindre une partie</div>
+            <div style={{ fontSize: 11, opacity: .7, letterSpacing: .3, fontWeight: 400 }}>J'ai reçu un code</div>
+          </div>
+          <div style={{ fontSize: 15, opacity: .5 }}>→</div>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function VersusCreateScreen({ onBack, onCreated, prefs, setPrefs, themeColors, glass, glassDark }) {
+  const C = themeColors;
+  const [playerName, setPlayerName] = useState(getStoredPlayerName());
+  const [creating, setCreating] = useState(false);
+  const [statusLabel, setStatusLabel] = useState("");
+  const [errorMsg, setErrorMsg] = useState(null);
+
+  async function handleCreate() {
+    const name = playerName.trim();
+    if (!name) { setErrorMsg("Choisis un pseudo."); return; }
+    if (name.length > 20) { setErrorMsg("Pseudo trop long (20 max)."); return; }
+    savePlayerName(name);
+
+    setCreating(true);
+    setErrorMsg(null);
+
+    // Choisit une difficulté cible (même logique que startRandom)
+    const isRandomMode = prefs.difficulty === "random";
+    let target = prefs.difficulty;
+    if (isRandomMode) target = pickWeightedDifficulty();
+    const targetRange = DIFFICULTIES[target]?.range;
+    const targetLabel = DIFFICULTIES[target]?.label || "défi";
+    const forHard = target === "hard";
+
+    setStatusLabel(`Recherche d'un défi ${targetLabel.toLowerCase()}…`);
+
+    try {
+      // Cherche une paire qui matche la difficulté (10 essais)
+      let chosen = null;
+      let lastAttempt = null;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const { start, end } = await pickRandomPair(prefs, forHard);
+        const optimal = await findOptimalPath(start, end, 5);
+        if (!optimal || optimal.length < 3) continue;
+        const steps = Math.floor((optimal.length - 1) / 2);
+        lastAttempt = { start, end, steps };
+        if (!targetRange || (steps >= targetRange[0] && steps <= targetRange[1])) {
+          chosen = lastAttempt;
+          break;
+        }
+      }
+      if (!chosen) chosen = lastAttempt;
+      if (!chosen) throw new Error("Aucun défi trouvé. Élargis tes critères.");
+
+      setStatusLabel("Création de la partie…");
+
+      const match = await createMatch({
+        startWork: chosen.start,
+        endWork: chosen.end,
+        optimalSteps: chosen.steps,
+        difficulty: target,
+      });
+
+      // Le créateur rejoint en slot 1
+      await joinMatch(match.id, name, 1);
+
+      onCreated(match.code);
+    } catch (e) {
+      console.error(e);
+      setErrorMsg(e.message || "Erreur lors de la création.");
+      setCreating(false);
+    }
+  }
+
+  const inputStyle = {
+    width: "100%", background: C.cardBg, border: `1px solid ${C.hairline}`,
+    outline: "none", borderRadius: 14, padding: "12px 16px",
+    fontSize: 16, fontFamily: "inherit", color: C.ink, fontWeight: 600,
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", padding: "70px 20px 40px", maxWidth: 480, margin: "0 auto" }}>
+      <header style={{ display: "flex", alignItems: "center", marginBottom: 28 }}>
+        <button onClick={onBack} disabled={creating} style={{ ...glass, borderRadius: 999, padding: "9px 14px", cursor: creating ? "not-allowed" : "pointer",
+          fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: C.ink, fontWeight: 600, border: "none", opacity: creating ? 0.5 : 1 }}>← Retour</button>
+      </header>
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ fontSize: 10, letterSpacing: 4, textTransform: "uppercase", color: C.inkSoft, marginBottom: 10, fontWeight: 600 }}>Versus · Créer</div>
+        <h2 style={{ fontWeight: 800, fontSize: 32, margin: 0, letterSpacing: -1.2, lineHeight: 1, color: C.ink }}>Ton pseudo</h2>
+      </div>
+
+      <div style={{ marginBottom: 22 }}>
+        <input value={playerName} onChange={(e) => setPlayerName(e.target.value)}
+          placeholder="Mathieu, Kévin…" maxLength={20}
+          disabled={creating}
+          style={inputStyle} />
+      </div>
+
+      <div style={{ marginBottom: 22 }}>
+        <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 10 }}>Mode</div>
+        <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
+          {Object.entries(MODES).map(([key, m]) => {
+            const active = prefs.mode === key;
+            return (
+              <button key={key} onClick={() => setPrefs(p => ({ ...p, mode: key }))} disabled={creating}
+                style={{ flex: 1, padding: "10px 6px", borderRadius: 999, border: "none",
+                  background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
+                  fontFamily: "inherit", fontSize: 12, fontWeight: 700,
+                  letterSpacing: 0.5, textTransform: "uppercase",
+                  cursor: creating ? "not-allowed" : "pointer", transition: "background .15s",
+                  opacity: creating ? 0.6 : 1 }}>{m.label}</button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 10 }}>Difficulté</div>
+        <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
+          {Object.entries(DIFFICULTIES).map(([key, d]) => {
+            const active = prefs.difficulty === key;
+            return (
+              <button key={key} onClick={() => setPrefs(p => ({ ...p, difficulty: key }))} disabled={creating}
+                style={{ flex: 1, padding: "9px 4px", borderRadius: 999, border: "none",
+                  background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
+                  fontFamily: "inherit", fontSize: 11, fontWeight: 600,
+                  letterSpacing: 0.4, textTransform: "uppercase",
+                  cursor: creating ? "not-allowed" : "pointer", transition: "background .15s",
+                  opacity: creating ? 0.6 : 1 }}>{d.label}</button>
+            );
+          })}
+        </div>
+        <div style={{ fontSize: 11, color: C.inkMute, marginTop: 6, fontWeight: 500 }}>{DIFFICULTIES[prefs.difficulty].sub}</div>
+      </div>
+
+      {errorMsg && (
+        <div style={{ ...glassDark, borderRadius: 14, padding: "10px 14px", marginBottom: 14, fontSize: 12 }}>
+          {errorMsg}
+        </div>
+      )}
+
+      {creating && (
+        <div style={{ textAlign: "center", marginBottom: 14 }}>
+          <Spinner label={statusLabel} themeColors={C} />
+        </div>
+      )}
+
+      <button onClick={handleCreate} disabled={creating || !playerName.trim()}
+        style={{ ...glassDark, borderRadius: 999, padding: "14px 22px",
+          fontSize: 13, letterSpacing: 1.3, textTransform: "uppercase",
+          cursor: (creating || !playerName.trim()) ? "not-allowed" : "pointer",
+          fontFamily: "inherit", fontWeight: 700,
+          border: "none", width: "100%",
+          opacity: (creating || !playerName.trim()) ? 0.4 : 1 }}>
+        {creating ? "Création…" : "Lancer la partie"}
+      </button>
+    </div>
+  );
+}
+
+function VersusJoinManualScreen({ onBack, onCodeReady, themeColors, glass, glassDark }) {
+  const C = themeColors;
+  const [code, setCode] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [errorMsg, setErrorMsg] = useState(null);
+
+  async function handleSubmit() {
+    const clean = code.replace(/\D/g, "");
+    if (clean.length !== 6) { setErrorMsg("Le code fait 6 chiffres."); return; }
+    setChecking(true);
+    setErrorMsg(null);
+    try {
+      const match = await getMatchByCode(clean);
+      if (!match) { setErrorMsg("Aucune partie avec ce code."); setChecking(false); return; }
+      if (match.status === "finished") { setErrorMsg("Cette partie est terminée."); setChecking(false); return; }
+      onCodeReady(clean);
+    } catch (e) {
+      setErrorMsg("Erreur de vérification. Réessaie.");
+      setChecking(false);
+    }
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", padding: "70px 20px 40px", maxWidth: 480, margin: "0 auto" }}>
+      <header style={{ display: "flex", alignItems: "center", marginBottom: 28 }}>
+        <button onClick={onBack} style={{ ...glass, borderRadius: 999, padding: "9px 14px", cursor: "pointer",
+          fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: C.ink, fontWeight: 600, border: "none" }}>← Retour</button>
+      </header>
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ fontSize: 10, letterSpacing: 4, textTransform: "uppercase", color: C.inkSoft, marginBottom: 10, fontWeight: 600 }}>Versus · Rejoindre</div>
+        <h2 style={{ fontWeight: 800, fontSize: 32, margin: 0, letterSpacing: -1.2, lineHeight: 1, color: C.ink }}>Code de la partie</h2>
+        <p style={{ fontSize: 13, color: C.inkSoft, marginTop: 8, fontWeight: 500 }}>
+          Demande le code à ton ami : 6 chiffres.
+        </p>
+      </div>
+
+      <input value={formatMatchCode(code.replace(/\D/g, ""))}
+        onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+        placeholder="000 000" inputMode="numeric" maxLength={7}
+        style={{ width: "100%", background: C.cardBg, border: `1px solid ${C.hairline}`,
+          outline: "none", borderRadius: 14, padding: "16px 20px",
+          fontSize: 26, fontFamily: "inherit", color: C.ink, fontWeight: 800,
+          letterSpacing: 4, textAlign: "center",
+          fontVariantNumeric: "tabular-nums" }} />
+
+      {errorMsg && (
+        <div style={{ ...glassDark, borderRadius: 14, padding: "10px 14px", marginTop: 14, fontSize: 12 }}>
+          {errorMsg}
+        </div>
+      )}
+
+      <button onClick={handleSubmit} disabled={checking || code.replace(/\D/g, "").length !== 6}
+        style={{ ...glassDark, borderRadius: 999, padding: "14px 22px",
+          fontSize: 13, letterSpacing: 1.3, textTransform: "uppercase",
+          cursor: (checking || code.replace(/\D/g, "").length !== 6) ? "not-allowed" : "pointer",
+          fontFamily: "inherit", fontWeight: 700,
+          border: "none", width: "100%", marginTop: 18,
+          opacity: (checking || code.replace(/\D/g, "").length !== 6) ? 0.4 : 1 }}>
+        {checking ? "Vérification…" : "Continuer"}
+      </button>
+    </div>
+  );
+}
+
+function VersusJoinScreen({ code, onBack, onJoined, themeColors, glass, glassDark }) {
+  const C = themeColors;
+  const [match, setMatch] = useState(null);
+  const [players, setPlayers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState(null);
+  const [playerName, setPlayerName] = useState(getStoredPlayerName());
+  const [joining, setJoining] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const m = await getMatchByCode(code);
+        if (cancelled) return;
+        if (!m) { setErrorMsg("Aucune partie avec ce code."); setLoading(false); return; }
+        if (m.status === "finished") { setErrorMsg("Cette partie est terminée."); setLoading(false); return; }
+        const ps = await getMatchPlayers(m.id);
+        if (cancelled) return;
+
+        // Si on est déjà dans cette partie (token), on passe direct au lobby
+        const myToken = getPlayerToken();
+        const me = ps.find(p => p.player_token === myToken);
+        if (me) { onJoined(); return; }
+
+        // Si la partie est pleine (2 joueurs et pas nous) → refus
+        if (ps.length >= 2) {
+          setErrorMsg("Cette partie est complète.");
+          setLoading(false);
+          return;
+        }
+
+        setMatch(m);
+        setPlayers(ps);
+        setLoading(false);
+      } catch (e) {
+        if (!cancelled) { setErrorMsg("Erreur de chargement."); setLoading(false); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [code, onJoined]);
+
+  async function handleJoin() {
+    const name = playerName.trim();
+    if (!name) { setErrorMsg("Choisis un pseudo."); return; }
+    if (name.length > 20) { setErrorMsg("Pseudo trop long (20 max)."); return; }
+    savePlayerName(name);
+
+    setJoining(true);
+    setErrorMsg(null);
+    try {
+      const slot = players.length === 0 ? 1 : 2;
+      await joinMatch(match.id, name, slot);
+      onJoined();
+    } catch (e) {
+      console.error(e);
+      setErrorMsg(e.message || "Erreur en rejoignant.");
+      setJoining(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div style={{ minHeight: "100vh", padding: "70px 20px 40px", maxWidth: 480, margin: "0 auto" }}>
+        <header style={{ display: "flex", alignItems: "center", marginBottom: 28 }}>
+          <button onClick={onBack} style={{ ...glass, borderRadius: 999, padding: "9px 14px", cursor: "pointer",
+            fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: C.ink, fontWeight: 600, border: "none" }}>← Menu</button>
+        </header>
+        <Spinner label="Chargement de la partie…" themeColors={C} />
+      </div>
+    );
+  }
+
+  if (errorMsg && !match) {
+    return (
+      <div style={{ minHeight: "100vh", padding: "70px 20px 40px", maxWidth: 480, margin: "0 auto" }}>
+        <header style={{ display: "flex", alignItems: "center", marginBottom: 28 }}>
+          <button onClick={onBack} style={{ ...glass, borderRadius: 999, padding: "9px 14px", cursor: "pointer",
+            fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: C.ink, fontWeight: 600, border: "none" }}>← Menu</button>
+        </header>
+        <div style={{ ...glass, borderRadius: 22, padding: 40, textAlign: "center" }}>
+          <div style={{ fontWeight: 800, fontSize: 22, marginBottom: 8, color: C.ink }}>Partie inaccessible</div>
+          <div style={{ fontSize: 13, color: C.inkSoft, lineHeight: 1.5 }}>{errorMsg}</div>
+        </div>
+      </div>
+    );
+  }
+
+  const creator = players[0];
+
+  return (
+    <div style={{ minHeight: "100vh", padding: "70px 20px 40px", maxWidth: 480, margin: "0 auto" }}>
+      <header style={{ display: "flex", alignItems: "center", marginBottom: 28 }}>
+        <button onClick={onBack} disabled={joining} style={{ ...glass, borderRadius: 999, padding: "9px 14px", cursor: joining ? "not-allowed" : "pointer",
+          fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: C.ink, fontWeight: 600, border: "none", opacity: joining ? 0.5 : 1 }}>← Annuler</button>
+      </header>
+      <div style={{ marginBottom: 24 }}>
+        <div style={{ fontSize: 10, letterSpacing: 4, textTransform: "uppercase", color: C.inkSoft, marginBottom: 10, fontWeight: 600 }}>Versus · Invitation</div>
+        <h2 style={{ fontWeight: 800, fontSize: 28, margin: 0, letterSpacing: -1, lineHeight: 1.1, color: C.ink }}>
+          {creator ? `${creator.player_name} t'invite` : "Tu rejoins la partie"}
+        </h2>
+        <p style={{ fontSize: 13, color: C.inkSoft, marginTop: 10, fontWeight: 500 }}>
+          Difficulté : <strong>{DIFFICULTIES[match.difficulty]?.label || "—"}</strong>
+        </p>
+      </div>
+
+      <div style={{ marginBottom: 22 }}>
+        <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 10 }}>Ton pseudo</div>
+        <input value={playerName} onChange={(e) => setPlayerName(e.target.value)}
+          placeholder="Ton pseudo" maxLength={20} disabled={joining}
+          style={{ width: "100%", background: C.cardBg, border: `1px solid ${C.hairline}`,
+            outline: "none", borderRadius: 14, padding: "12px 16px",
+            fontSize: 16, fontFamily: "inherit", color: C.ink, fontWeight: 600 }} />
+      </div>
+
+      {errorMsg && (
+        <div style={{ ...glassDark, borderRadius: 14, padding: "10px 14px", marginBottom: 14, fontSize: 12 }}>
+          {errorMsg}
+        </div>
+      )}
+
+      <button onClick={handleJoin} disabled={joining || !playerName.trim()}
+        style={{ ...glassDark, borderRadius: 999, padding: "14px 22px",
+          fontSize: 13, letterSpacing: 1.3, textTransform: "uppercase",
+          cursor: (joining || !playerName.trim()) ? "not-allowed" : "pointer",
+          fontFamily: "inherit", fontWeight: 700,
+          border: "none", width: "100%",
+          opacity: (joining || !playerName.trim()) ? 0.4 : 1 }}>
+        {joining ? "Connexion…" : "Rejoindre"}
+      </button>
+    </div>
+  );
+}
+
+function VersusLobbyScreen({ code, onBack, onStart, themeColors, glass, glassDark }) {
+  const C = themeColors;
+  const [match, setMatch] = useState(null);
+  const [players, setPlayers] = useState([]);
+  const [error, setError] = useState(null);
+  const [shareStatus, setShareStatus] = useState(null);
+
+  const myToken = useMemo(() => getPlayerToken(), []);
+  const me = players.find(p => p.player_token === myToken);
+  const opponent = players.find(p => p.player_token !== myToken);
+  const iAmCreator = me?.slot === 1;
+  const bothReady = players.length === 2;
+
+  // Charge initial + subscribe realtime
+  useEffect(() => {
+    let cancelled = false;
+    let channel = null;
+
+    (async () => {
+      try {
+        const m = await getMatchByCode(code);
+        if (cancelled) return;
+        if (!m) { setError("Partie introuvable."); return; }
+        setMatch(m);
+        const ps = await getMatchPlayers(m.id);
+        if (cancelled) return;
+        setPlayers(ps);
+
+        // Realtime : écoute les changements sur match_players et matches
+        channel = supabase.channel(`match-${m.id}`)
+          .on("postgres_changes", {
+            event: "*", schema: "public", table: "match_players",
+            filter: `match_id=eq.${m.id}`,
+          }, () => {
+            getMatchPlayers(m.id).then(p => { if (!cancelled) setPlayers(p); });
+          })
+          .on("postgres_changes", {
+            event: "UPDATE", schema: "public", table: "matches",
+            filter: `id=eq.${m.id}`,
+          }, (payload) => {
+            if (!cancelled) setMatch(payload.new);
+          })
+          .subscribe();
+      } catch (e) {
+        if (!cancelled) setError("Erreur de chargement.");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (channel) supabase.removeChannel(channel);
+    };
+  }, [code]);
+
+  const shareUrl = `${window.location.origin}${window.location.pathname}?versus=${code}`;
+
+  function copyLink() {
+    navigator.clipboard.writeText(shareUrl).then(() => {
+      setShareStatus("link");
+      setTimeout(() => setShareStatus(null), 2000);
+    });
+  }
+  function copyCode() {
+    navigator.clipboard.writeText(code).then(() => {
+      setShareStatus("code");
+      setTimeout(() => setShareStatus(null), 2000);
+    });
+  }
+
+  if (error) {
+    return (
+      <div style={{ minHeight: "100vh", padding: "70px 20px 40px", maxWidth: 480, margin: "0 auto" }}>
+        <header style={{ display: "flex", alignItems: "center", marginBottom: 28 }}>
+          <button onClick={onBack} style={{ ...glass, borderRadius: 999, padding: "9px 14px", cursor: "pointer",
+            fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: C.ink, fontWeight: 600, border: "none" }}>← Menu</button>
+        </header>
+        <div style={{ ...glass, borderRadius: 22, padding: 40, textAlign: "center" }}>
+          <div style={{ fontWeight: 800, fontSize: 22, marginBottom: 8, color: C.ink }}>Erreur</div>
+          <div style={{ fontSize: 13, color: C.inkSoft, lineHeight: 1.5 }}>{error}</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!match) {
+    return (
+      <div style={{ minHeight: "100vh", padding: "70px 20px 40px", maxWidth: 480, margin: "0 auto" }}>
+        <Spinner label="Connexion à la partie…" themeColors={C} />
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", padding: "70px 20px 40px", maxWidth: 480, margin: "0 auto" }}>
+      <header style={{ display: "flex", alignItems: "center", marginBottom: 28 }}>
+        <button onClick={onBack} style={{ ...glass, borderRadius: 999, padding: "9px 14px", cursor: "pointer",
+          fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: C.ink, fontWeight: 600, border: "none" }}>← Quitter</button>
+      </header>
+
+      <div style={{ marginBottom: 28, textAlign: "center" }}>
+        <div style={{ fontSize: 10, letterSpacing: 4, textTransform: "uppercase", color: C.inkSoft, marginBottom: 10, fontWeight: 600 }}>Versus · Salon</div>
+        <h2 style={{ fontWeight: 800, fontSize: 26, margin: 0, letterSpacing: -1, lineHeight: 1.1, color: C.ink }}>
+          {bothReady ? "Prêt à jouer !" : "En attente du joueur 2…"}
+        </h2>
+      </div>
+
+      {/* Code à partager */}
+      {iAmCreator && !bothReady && (
+        <div style={{ ...glass, borderRadius: 22, padding: 24, marginBottom: 20, textAlign: "center" }}>
+          <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, marginBottom: 12, fontWeight: 600 }}>Code à partager</div>
+          <div style={{ fontSize: 38, fontWeight: 800, letterSpacing: 8, color: C.ink, fontVariantNumeric: "tabular-nums", marginBottom: 16 }}>
+            {formatMatchCode(code)}
+          </div>
+          <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
+            <button onClick={copyCode}
+              style={{ ...glass, borderRadius: 999, padding: "9px 16px", cursor: "pointer",
+                fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase",
+                color: shareStatus === "code" ? C.green : C.ink, fontWeight: 600, border: `1px solid ${C.hairline}` }}>
+              {shareStatus === "code" ? "✓ Copié" : "Copier le code"}
+            </button>
+            <button onClick={copyLink}
+              style={{ ...glassDark, borderRadius: 999, padding: "9px 16px", cursor: "pointer",
+                fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase",
+                color: shareStatus === "link" ? C.green : "inherit", fontWeight: 700, border: "none" }}>
+              {shareStatus === "link" ? "✓ Lien copié" : "Copier le lien"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Liste joueurs */}
+      <div style={{ ...glass, borderRadius: 22, padding: 20, marginBottom: 20 }}>
+        <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, marginBottom: 14, fontWeight: 600 }}>Joueurs</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <PlayerRow
+            slot={1} name={players.find(p => p.slot === 1)?.player_name}
+            isMe={me?.slot === 1}
+            themeColors={C} />
+          <PlayerRow
+            slot={2} name={players.find(p => p.slot === 2)?.player_name}
+            isMe={me?.slot === 2}
+            themeColors={C} />
+        </div>
+      </div>
+
+      {/* Action principale */}
+      {bothReady ? (
+        iAmCreator ? (
+          <button onClick={onStart}
+            style={{ ...glassDark, borderRadius: 999, padding: "14px 22px",
+              fontSize: 13, letterSpacing: 1.3, textTransform: "uppercase",
+              cursor: "pointer", fontFamily: "inherit", fontWeight: 700,
+              border: "none", width: "100%" }}>
+            Démarrer le défi
+          </button>
+        ) : (
+          <div style={{ textAlign: "center", fontSize: 12, color: C.inkSoft, fontWeight: 500, padding: "12px 0" }}>
+            En attente du créateur pour lancer la partie…
+          </div>
+        )
+      ) : (
+        <div style={{ textAlign: "center", fontSize: 12, color: C.inkMute, fontWeight: 500, padding: "12px 0" }}>
+          {iAmCreator
+            ? "Partage le code ou le lien à ton ami."
+            : "Partie créée. Attendons le démarrage…"}
+        </div>
+      )}
+
+      <div style={{ marginTop: 28, textAlign: "center", fontSize: 11, color: C.inkMute, fontWeight: 500, lineHeight: 1.5 }}>
+        ⚡ Le mode Versus complet (jeu en temps réel, comparaison des scores) arrive très bientôt.
+      </div>
+    </div>
+  );
+}
+
+function PlayerRow({ slot, name, isMe, themeColors }) {
+  const C = themeColors;
+  const ready = !!name;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0" }}>
+      <div style={{ width: 10, height: 10, borderRadius: "50%",
+        background: ready ? C.green : "transparent",
+        border: ready ? "none" : `1.5px dashed ${C.inkMute}`,
+        flexShrink: 0 }} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: ready ? C.ink : C.inkMute,
+          letterSpacing: -0.3, fontStyle: ready ? "normal" : "italic" }}>
+          {name || "En attente…"}
+          {isMe && ready && <span style={{ fontSize: 10, letterSpacing: 1.5, textTransform: "uppercase",
+            color: C.inkSoft, marginLeft: 10, fontWeight: 600 }}>· toi</span>}
+        </div>
+        <div style={{ fontSize: 10, letterSpacing: 1.5, textTransform: "uppercase",
+          color: C.inkMute, fontWeight: 500, marginTop: 2 }}>
+          Joueur {slot}
         </div>
       </div>
     </div>
