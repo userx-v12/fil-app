@@ -602,6 +602,48 @@ async function createRematch({ previousMatchId, startWork, endWork, optimalSteps
   return newMatch;
 }
 
+// Régénère le défi d'un match existant (start/end/optimal_steps/difficulty) et lance la partie
+// en un seul UPDATE atomique. Utilisé quand le créateur clique "Démarrer" depuis le lobby
+// (les filtres du lobby ont pu changer entre la création initiale et le lancement).
+async function regenerateAndStartMatch(matchId, prefs, difficulty) {
+  const isRandomMode = difficulty === "random";
+  let target = difficulty;
+  if (isRandomMode) target = pickWeightedDifficulty();
+  const targetRange = DIFFICULTIES[target]?.range;
+  const forHard = target === "hard";
+
+  let chosen = null;
+  let lastAttempt = null;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const { start, end } = await pickRandomPair(prefs, forHard);
+    const optimal = await findOptimalPath(start, end, 5);
+    if (!optimal || optimal.length < 3) continue;
+    const steps = Math.floor((optimal.length - 1) / 2);
+    lastAttempt = { start, end, steps };
+    if (!targetRange || (steps >= targetRange[0] && steps <= targetRange[1])) {
+      chosen = lastAttempt; break;
+    }
+  }
+  if (!chosen) chosen = lastAttempt;
+  if (!chosen) throw new Error("Aucun défi trouvé avec ces filtres.");
+
+  // Single UPDATE atomique pour éviter les races avec les autres clients
+  const { data, error } = await supabase
+    .from("matches")
+    .update({
+      start_id: chosen.start.id, start_type: chosen.start.type,
+      end_id: chosen.end.id, end_type: chosen.end.type,
+      optimal_steps: chosen.steps, difficulty: target,
+      status: "playing",
+      started_at: new Date().toISOString(),
+    })
+    .eq("id", matchId)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
 // =========================================================================
 // BFS
 // On identifie chaque œuvre par sa clé composite "id:type".
@@ -703,6 +745,7 @@ const THEMES = {
     green: "#16a34a", greenSoft: "#84cc16",
     amber: "#a16207", orange: "#ea580c",
     yellow: "#eab308",
+    versusMe: "#2563eb", versusOpponent: "#db2777",
     glassBg: "rgba(255, 255, 255, 0.65)", glassDarkBg: "#0f1729", glassDarkInk: "#ffffff",
     radialA: "rgba(15,23,41,0.06)", radialB: "rgba(15,23,41,0.05)",
     cardHover: "rgba(15,23,41,0.04)", cardBg: "rgba(255,255,255,0.5)",
@@ -716,6 +759,7 @@ const THEMES = {
     green: "#22c55e", greenSoft: "#a3e635",
     amber: "#d97706", orange: "#f97316",
     yellow: "#facc15",
+    versusMe: "#60a5fa", versusOpponent: "#f472b6",
     glassBg: "rgba(30, 38, 58, 0.55)", glassDarkBg: "#fafafa", glassDarkInk: "#0f1729",
     radialA: "rgba(99, 102, 241, 0.08)", radialB: "rgba(244, 114, 182, 0.06)",
     cardHover: "rgba(250,250,250,0.06)", cardBg: "rgba(255,255,255,0.04)",
@@ -1112,6 +1156,7 @@ export default function App() {
   const [showInfo, setShowInfo] = useState(false);
   const [versusCode, setVersusCode] = useState(null); // Code de partie Versus en cours
   const [versusContext, setVersusContext] = useState(null); // Contexte du jeu Versus { matchId, code, myPlayerId, mySlot, myName, opponentName, opponentPlayerId }
+  const [versusPrefs, setVersusPrefs] = useState(() => ({ ...DEFAULT_PREFS })); // Prefs Versus indépendantes des prefs globales, partagées entre Create et Lobby
 
   useEffect(() => { savePrefs(prefs); }, [prefs]);
   useEffect(() => { document.body.style.background = C.bg; saveTheme(theme); }, [theme, C.bg]);
@@ -1379,11 +1424,21 @@ export default function App() {
   }
 
   // Lance une revanche : créateur du match précédent → crée un nouveau match avec mêmes prefs et l'autre est invité
-  async function startRematch(previousMatch) {
+  // Revanche bilatérale : n'importe quel joueur peut cliquer "Revanche".
+  // Premier qui clique gagne (atomic claim sur rematch_code), l'autre rejoint automatiquement.
+  async function requestRematch(previousMatch) {
     setLoadingChallenge(true);
     setLoadingLabel("Préparation de la revanche…");
     setError(null);
     try {
+      // 1. Vérifie l'état actuel : peut-être que l'autre a déjà créé la revanche
+      const { data: refreshed } = await supabase
+        .from("matches").select("rematch_code").eq("id", previousMatch.id).maybeSingle();
+      if (refreshed?.rematch_code) {
+        return await joinExistingRematch(refreshed.rematch_code);
+      }
+
+      // 2. Pas encore créée : on tente de la créer
       const isRandomMode = prefs.difficulty === "random";
       let target = prefs.difficulty;
       if (isRandomMode) target = pickWeightedDifficulty();
@@ -1405,21 +1460,40 @@ export default function App() {
       if (!chosen) chosen = lastAttempt;
       if (!chosen) throw new Error("Aucun défi trouvé pour la revanche.");
 
-      const newMatch = await createRematch({
-        previousMatchId: previousMatch.id,
+      // 3. Crée le nouveau match
+      const newMatch = await createMatch({
         startWork: chosen.start, endWork: chosen.end,
         optimalSteps: chosen.steps, difficulty: target,
       });
 
-      // On rejoint en slot 1 (créateur de la revanche)
-      const myName = getStoredPlayerName() || "Joueur";
-      await joinMatch(newMatch.id, myName, 1);
+      // 4. Tente de poser le rematch_code sur l'ancien match de façon atomique
+      const { data: claimed } = await supabase
+        .from("matches")
+        .update({ rematch_code: newMatch.code })
+        .eq("id", previousMatch.id)
+        .is("rematch_code", null)
+        .select();
 
-      setVersusCode(newMatch.code);
-      setVersusInURL(newMatch.code);
-      setVersusContext(null);
-      setChallenge(null);
-      setScreen("versus-lobby");
+      if (claimed && claimed.length > 0) {
+        // On a gagné la course → on devient le créateur (slot 1)
+        const myName = getStoredPlayerName() || "Joueur";
+        await joinMatch(newMatch.id, myName, 1);
+
+        setVersusCode(newMatch.code);
+        setVersusInURL(newMatch.code);
+        setVersusContext(null);
+        setChallenge(null);
+        setScreen("versus-lobby");
+      } else {
+        // L'autre joueur nous a doublés : on rejoint sa revanche (notre match créé devient orphelin, pas grave)
+        const { data: winner } = await supabase
+          .from("matches").select("rematch_code").eq("id", previousMatch.id).maybeSingle();
+        if (winner?.rematch_code) {
+          await joinExistingRematch(winner.rematch_code);
+        } else {
+          throw new Error("Impossible de rejoindre la revanche.");
+        }
+      }
     } catch (e) {
       console.error(e);
       setError(e.message);
@@ -1428,37 +1502,27 @@ export default function App() {
     }
   }
 
-  // Rejoint une revanche depuis l'écran de fin Versus (côté invité)
-  async function joinRematch(rematchCode) {
-    setLoadingChallenge(true);
-    setLoadingLabel("Connexion à la revanche…");
-    setError(null);
-    try {
-      const newMatch = await getMatchByCode(rematchCode);
-      if (!newMatch) throw new Error("Revanche introuvable.");
+  async function joinExistingRematch(rematchCode) {
+    const newMatch = await getMatchByCode(rematchCode);
+    if (!newMatch) throw new Error("Revanche introuvable.");
 
-      // Vérifie si on est déjà dans cette nouvelle partie
-      const myToken = getPlayerToken();
-      const players = await getMatchPlayers(newMatch.id);
-      const me = players.find(p => p.player_token === myToken);
+    const myToken = getPlayerToken();
+    const players = await getMatchPlayers(newMatch.id);
+    const me = players.find(p => p.player_token === myToken);
 
-      if (!me) {
-        // On rejoint en slot 2 (invité)
-        const myName = getStoredPlayerName() || "Joueur";
-        await joinMatch(newMatch.id, myName, 2);
-      }
-
-      setVersusCode(newMatch.code);
-      setVersusInURL(newMatch.code);
-      setVersusContext(null);
-      setChallenge(null);
-      setScreen("versus-lobby");
-    } catch (e) {
-      console.error(e);
-      setError(e.message);
-    } finally {
-      setLoadingChallenge(false);
+    if (!me) {
+      // On choisit le slot libre (l'autre a pris 1, on prend 2 ; sinon 1)
+      const usedSlots = players.map(p => p.slot);
+      const mySlot = usedSlots.includes(1) ? 2 : 1;
+      const myName = getStoredPlayerName() || "Joueur";
+      await joinMatch(newMatch.id, myName, mySlot);
     }
+
+    setVersusCode(newMatch.code);
+    setVersusInURL(newMatch.code);
+    setVersusContext(null);
+    setChallenge(null);
+    setScreen("versus-lobby");
   }
 
   const showTopButtons = screen !== "game";
@@ -1504,26 +1568,27 @@ export default function App() {
               onFinished={onGameFinished}
               onRefreshPart={versusContext ? null : refreshOnePart}
               versusContext={versusContext}
-              onStartRematch={startRematch}
-              onJoinRematch={joinRematch}
+              onStartRematch={requestRematch}
+              onJoinRematch={requestRematch}
               themeColors={C} glass={glass} glassDark={glassDark} theme={theme} />
       )}
       {screen === "custom" && <CustomScreen onBack={() => setScreen("menu")} onStart={startCustom}
                                 themeColors={C} glass={glass} glassDark={glassDark} />}
       {screen === "multi" && <VersusScreen
                                 onBack={() => setScreen("menu")}
-                                onCreate={() => setScreen("versus-create")}
+                                onCreate={() => { setVersusPrefs({ ...prefs }); setScreen("versus-create"); }}
                                 onJoinManual={() => setScreen("versus-join-manual")}
                                 themeColors={C} glass={glass} glassDark={glassDark} />}
       {screen === "versus-create" && <VersusCreateScreen
                                 onBack={() => setScreen("multi")}
                                 onCreated={(code) => { setVersusCode(code); setVersusInURL(code); setScreen("versus-lobby"); }}
-                                prefs={prefs}
+                                versusPrefs={versusPrefs} setVersusPrefs={setVersusPrefs}
                                 themeColors={C} glass={glass} glassDark={glassDark} />}
       {screen === "versus-lobby" && versusCode && <VersusLobbyScreen
                                 code={versusCode}
                                 onBack={() => { clearVersusFromURL(); setVersusCode(null); setScreen("multi"); }}
                                 onStartGame={prepareAndStartVersusGame}
+                                versusPrefs={versusPrefs} setVersusPrefs={setVersusPrefs}
                                 themeColors={C} glass={glass} glassDark={glassDark} />}
       {screen === "versus-join" && versusCode && <VersusJoinScreen
                                 code={versusCode}
@@ -1633,7 +1698,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.10</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.11</div>
     </div>
   );
 }
@@ -2011,6 +2076,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
   const [opponentAbandoned, setOpponentAbandoned] = useState(false);
   const [opponentFinalSteps, setOpponentFinalSteps] = useState(null);
   const [opponentFinalTimeMs, setOpponentFinalTimeMs] = useState(null);
+  const [opponentHintsUsed, setOpponentHintsUsed] = useState(0);
 
   const currentMovie = path[path.length - 1].data;
   const isAtEnd = currentMovie.id === challenge.end.id && currentMovie.type === challenge.end.type;
@@ -2052,6 +2118,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
           setOpponentAbandoned(!!opp.abandoned);
           setOpponentFinalSteps(opp.final_steps);
           setOpponentFinalTimeMs(opp.final_time_ms);
+          setOpponentHintsUsed(opp.hints_used || 0);
         }
       } catch {}
     })();
@@ -2069,6 +2136,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
         setOpponentAbandoned(!!p.abandoned);
         setOpponentFinalSteps(p.final_steps);
         setOpponentFinalTimeMs(p.final_time_ms);
+        setOpponentHintsUsed(p.hints_used || 0);
       })
       .subscribe();
 
@@ -2230,6 +2298,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
             opponentSteps={opponentSteps}
             opponentFinalSteps={opponentFinalSteps}
             opponentFinalTimeMs={opponentFinalTimeMs}
+            opponentHintsUsed={opponentHintsUsed}
             optimalSteps={challenge.optimal ? Math.max(0, Math.floor((challenge.optimal.length - 1) / 2)) : null}
             optimalPath={challenge.optimal}
             startWork={challenge.start} endWork={challenge.end}
@@ -2840,22 +2909,29 @@ function VersusBanner({ myName, opponentName, mySteps, opponentSteps, opponentFi
   const oppDisplay = opponentAbandoned ? "Abandon"
                    : opponentFinished  ? `${opponentFinalSteps ?? opponentSteps} ét.`
                                        : `${opponentSteps} ét.`;
-  const oppColor = opponentAbandoned ? C.amber
-                  : opponentFinished ? C.green
-                                     : C.ink;
+  const oppValueColor = opponentAbandoned ? C.amber
+                      : opponentFinished  ? C.green
+                                          : C.versusOpponent;
   return (
     <div style={{ ...glass, borderRadius: 14, padding: "10px 14px",
       display: "flex", alignItems: "center", justifyContent: "space-between",
       gap: 12, marginBottom: 14 }}>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", minWidth: 0, flex: 1 }}>
-        <div style={{ fontSize: 9, letterSpacing: 1.8, textTransform: "uppercase", color: C.inkMute, fontWeight: 600 }}>{myName} · toi</div>
-        <div style={{ fontSize: 16, fontWeight: 800, color: C.ink, letterSpacing: -0.4, fontVariantNumeric: "tabular-nums" }}>{mySteps} ét.</div>
+        <div style={{ fontSize: 9, letterSpacing: 1.8, textTransform: "uppercase", color: C.versusMe, fontWeight: 700,
+          display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>
+          <span style={{ width: 6, height: 6, borderRadius: "50%", background: C.versusMe, display: "inline-block" }} />
+          {myName} · toi
+        </div>
+        <div style={{ fontSize: 16, fontWeight: 800, color: C.versusMe, letterSpacing: -0.4, fontVariantNumeric: "tabular-nums" }}>{mySteps} ét.</div>
       </div>
       <div style={{ width: 1, alignSelf: "stretch", background: C.hairline }} />
       <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", minWidth: 0, flex: 1 }}>
-        <div style={{ fontSize: 9, letterSpacing: 1.8, textTransform: "uppercase", color: C.inkMute, fontWeight: 600,
-          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>{opponentName}</div>
-        <div style={{ fontSize: 16, fontWeight: 800, color: oppColor, letterSpacing: -0.4, fontVariantNumeric: "tabular-nums" }}>{oppDisplay}</div>
+        <div style={{ fontSize: 9, letterSpacing: 1.8, textTransform: "uppercase", color: C.versusOpponent, fontWeight: 700,
+          display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>
+          {opponentName}
+          <span style={{ width: 6, height: 6, borderRadius: "50%", background: C.versusOpponent, display: "inline-block" }} />
+        </div>
+        <div style={{ fontSize: 16, fontWeight: 800, color: oppValueColor, letterSpacing: -0.4, fontVariantNumeric: "tabular-nums" }}>{oppDisplay}</div>
       </div>
     </div>
   );
@@ -2975,21 +3051,12 @@ function VersusEndScreen({
     }
   }
 
-  async function handleStartRematch() {
+  async function handleRequestRematch() {
     if (requestingRematch) return;
     setRequestingRematch(true);
     try {
+      // onStartRematch et onJoinRematch pointent tous deux vers requestRematch en v5.11
       await onStartRematch({ id: matchId });
-    } catch (e) {
-      setRequestingRematch(false);
-    }
-  }
-
-  async function handleJoinRematch() {
-    if (!rematchCode || requestingRematch) return;
-    setRequestingRematch(true);
-    try {
-      await onJoinRematch(rematchCode);
     } catch (e) {
       setRequestingRematch(false);
     }
@@ -3044,8 +3111,10 @@ function VersusEndScreen({
 
           {/* Mon chemin */}
           {myPath && myPath.length > 0 && (
-            <div style={{ ...glass, borderRadius: 16, padding: 14, marginBottom: 10, textAlign: "left" }}>
-              <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.ink, marginBottom: 10, fontWeight: 700 }}>
+            <div style={{ ...glass, borderRadius: 16, padding: 14, marginBottom: 10, textAlign: "left",
+              borderLeft: `3px solid ${C.versusMe}` }}>
+              <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.versusMe, marginBottom: 10, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ width: 8, height: 8, borderRadius: "50%", background: C.versusMe, display: "inline-block" }} />
                 Ton parcours
               </div>
               <PathStrip path={myPath} themeColors={C} />
@@ -3054,8 +3123,10 @@ function VersusEndScreen({
 
           {/* Chemin adversaire */}
           {opponentPath && opponentPath.length > 0 && (
-            <div style={{ ...glass, borderRadius: 16, padding: 14, marginBottom: 10, textAlign: "left", opacity: 0.95 }}>
-              <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, marginBottom: 10, fontWeight: 700 }}>
+            <div style={{ ...glass, borderRadius: 16, padding: 14, marginBottom: 10, textAlign: "left",
+              borderLeft: `3px solid ${C.versusOpponent}` }}>
+              <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.versusOpponent, marginBottom: 10, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ width: 8, height: 8, borderRadius: "50%", background: C.versusOpponent, display: "inline-block" }} />
                 Parcours de {opponentName}
               </div>
               <PathStrip path={opponentPath} themeColors={C} />
@@ -3103,25 +3174,27 @@ function VersusEndScreen({
       <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap", marginTop: 24 }}>
         <button onClick={onExit} style={btnSecondary}>Menu</button>
 
-        {/* Revanche : créateur uniquement, après que les deux ont fini */}
-        {bothDone && iAmCreator && !rematchCode && (
-          <button onClick={handleStartRematch} disabled={requestingRematch} style={btnPrimary}>
+        {/* REVANCHE BILATÉRALE :
+            - Si personne n'a encore demandé : bouton "Revanche" pour les 2
+            - Si l'autre a déjà demandé (rematch_code apparu) : bouton vert "X propose une revanche !"
+        */}
+        {bothDone && !rematchCode && (
+          <button onClick={handleRequestRematch} disabled={requestingRematch} style={btnPrimary}>
             {requestingRematch ? <>Préparation<AnimatedDots color="#fff" /></> : "Revanche"}
           </button>
         )}
 
-        {/* Revanche dispo : invité rejoint la revanche */}
-        {bothDone && !iAmCreator && rematchCode && (
-          <button onClick={handleJoinRematch} disabled={requestingRematch} style={{ ...btnPrimary, background: C.green, boxShadow: `0 4px 14px ${C.green}66` }}>
-            {requestingRematch ? <>Connexion<AnimatedDots color="#fff" /></> : `${opponentName} propose une revanche !`}
+        {bothDone && rematchCode && !requestingRematch && (
+          <button onClick={handleRequestRematch}
+            style={{ ...btnPrimary, background: C.green, boxShadow: `0 4px 14px ${C.green}66` }}>
+            {`${opponentName} propose une revanche !`}
           </button>
         )}
 
-        {/* Créateur en attente : la revanche a été créée, l'invité doit accepter */}
-        {bothDone && iAmCreator && rematchCode && (
-          <div style={{ fontSize: 11, color: C.inkSoft, fontWeight: 600, alignSelf: "center", letterSpacing: 1 }}>
-            Revanche prête. En attente de {opponentName}<AnimatedDots />
-          </div>
+        {bothDone && rematchCode && requestingRematch && (
+          <button disabled style={{ ...btnPrimary, background: C.green, opacity: 0.7 }}>
+            <>Connexion<AnimatedDots color="#fff" /></>
+          </button>
         )}
       </div>
     </div>
@@ -3130,6 +3203,7 @@ function VersusEndScreen({
 
 function VersusPlayerCard({ name, isMe, steps, timeMs, abandoned, hintsUsed, winner, done, inProgress, themeColors, glass }) {
   const C = themeColors;
+  const accent = isMe ? C.versusMe : C.versusOpponent;
   const formatTime = (ms) => {
     if (ms == null) return "—";
     const s = Math.floor(ms / 1000);
@@ -3138,10 +3212,12 @@ function VersusPlayerCard({ name, isMe, steps, timeMs, abandoned, hintsUsed, win
   return (
     <div style={{ ...glass, borderRadius: 16, padding: "14px 16px",
       border: winner ? `1.5px solid ${C.green}` : `1px solid ${C.hairline}`,
+      borderLeft: winner ? `1.5px solid ${C.green}` : `3px solid ${accent}`,
       boxShadow: winner ? `0 0 0 2px ${C.green}30, 0 0 24px ${C.green}20` : "none",
       display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
       <div style={{ textAlign: "left", flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", color: C.inkMute, fontWeight: 600 }}>
+        <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", color: accent, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ width: 6, height: 6, borderRadius: "50%", background: accent, display: "inline-block" }} />
           {isMe ? "Toi" : "Adversaire"}
         </div>
         <div style={{ fontSize: 17, fontWeight: 800, color: C.ink, letterSpacing: -0.5,
@@ -3344,18 +3420,15 @@ function VersusScreen({ onBack, onCreate, onJoinManual, themeColors, glass, glas
   );
 }
 
-function VersusCreateScreen({ onBack, onCreated, prefs, themeColors, glass, glassDark }) {
-  const C = themeColors;
-  // versusPrefs : COPIE indépendante des prefs au mount. Modifications ne touchent pas les prefs globales.
-  const [versusPrefs, setVersusPrefs] = useState(() => ({ ...prefs }));
-  const [playerName, setPlayerName] = useState(getStoredPlayerName());
-  const [creating, setCreating] = useState(false);
-  const [statusLabel, setStatusLabel] = useState("");
-  const [errorMsg, setErrorMsg] = useState(null);
-  const [showAdvanced, setShowAdvanced] = useState(false);
+// =========================================================================
+// VERSUS — Panel des filtres réutilisable (utilisé dans CreateScreen + Lobby)
+// =========================================================================
 
+function VersusFiltersPanel({ versusPrefs, setVersusPrefs, disabled, themeColors, glass }) {
+  const C = themeColors;
   const allLangs = Object.keys(LANGUAGES);
   const allGenres = Object.keys(GENRES);
+  const allLangsChecked = (versusPrefs.languages || []).length === allLangs.length;
 
   function toggleLang(code) {
     setVersusPrefs(p => {
@@ -3363,6 +3436,9 @@ function VersusCreateScreen({ onBack, onCreated, prefs, themeColors, glass, glas
       const next = has ? p.languages.filter(l => l !== code) : [...p.languages, code];
       return { ...p, languages: next.length === 0 ? ["en"] : next };
     });
+  }
+  function toggleAllLangs() {
+    setVersusPrefs(p => ({ ...p, languages: allLangsChecked ? ["en"] : allLangs }));
   }
   function toggleGenre(id) {
     setVersusPrefs(p => {
@@ -3374,6 +3450,12 @@ function VersusCreateScreen({ onBack, onCreated, prefs, themeColors, glass, glas
       return { ...p, [key]: has ? cur.filter(g => g !== n) : [...cur, n] };
     });
   }
+  function clearGenres() {
+    setVersusPrefs(p => {
+      const isInclude = (p.filterMode || "exclude") === "include";
+      return { ...p, [isInclude ? "includeGenres" : "excludeGenres"]: [] };
+    });
+  }
   function toggleEra(key) {
     setVersusPrefs(p => {
       const current = p.eras || [];
@@ -3381,6 +3463,203 @@ function VersusCreateScreen({ onBack, onCreated, prefs, themeColors, glass, glas
       return { ...p, eras: has ? current.filter(k => k !== key) : [...current, key] };
     });
   }
+  function resetDefaults() {
+    setVersusPrefs(p => ({
+      ...p,
+      languages: [...DEFAULT_PREFS.languages],
+      filterMode: DEFAULT_PREFS.filterMode,
+      includeGenres: [...DEFAULT_PREFS.includeGenres],
+      excludeGenres: [...DEFAULT_PREFS.excludeGenres],
+      eras: [...DEFAULT_PREFS.eras],
+      minRating: DEFAULT_PREFS.minRating,
+    }));
+  }
+
+  const titleStyle = {
+    fontSize: 10, letterSpacing: 2, textTransform: "uppercase",
+    color: C.inkSoft, fontWeight: 700,
+  };
+  // Pattern uniforme pour les titres de sections : flex avec bouton optionnel à droite
+  const titleRowStyle = {
+    display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8,
+  };
+  const linkBtnStyle = {
+    background: "none", border: "none", color: C.ink, fontFamily: "inherit",
+    fontSize: 9, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
+    cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.5 : 0.75,
+  };
+
+  return (
+    <div style={{ ...glass, borderRadius: 16, padding: 16 }}>
+      {/* Époques */}
+      <div style={{ marginBottom: 18 }}>
+        <div style={titleRowStyle}>
+          <div style={titleStyle}>Époques</div>
+          {versusPrefs.eras?.length > 0 && (
+            <button onClick={() => setVersusPrefs(p => ({ ...p, eras: [] }))} disabled={disabled} style={linkBtnStyle}>Vider</button>
+          )}
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {Object.entries(ERAS).map(([key, e]) => {
+            const active = (versusPrefs.eras || []).includes(key);
+            return (
+              <button key={key} onClick={() => toggleEra(key)} disabled={disabled}
+                style={{ padding: "6px 12px", borderRadius: 999,
+                  border: `1px solid ${active ? C.ink : C.hairline}`,
+                  background: active ? C.ink : C.cardBg, color: active ? C.bg : C.ink,
+                  fontFamily: "inherit", fontSize: 11, fontWeight: 600,
+                  cursor: disabled ? "not-allowed" : "pointer",
+                  opacity: disabled ? 0.6 : 1 }}>{e.label}</button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Note minimale */}
+      <div style={{ marginBottom: 18 }}>
+        <style>{`
+          .rating-slider-vp {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: ${C.hairline};
+            outline: none;
+            margin: 12px 0 4px;
+            cursor: pointer;
+          }
+          .rating-slider-vp::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 18px; height: 18px;
+            border-radius: 50%;
+            background: ${C.ink};
+            cursor: pointer;
+            border: 2px solid ${C.bg};
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+          }
+          .rating-slider-vp::-moz-range-thumb {
+            width: 18px; height: 18px;
+            border-radius: 50%;
+            background: ${C.ink};
+            cursor: pointer;
+            border: 2px solid ${C.bg};
+          }
+        `}</style>
+        <div style={titleRowStyle}>
+          <div style={titleStyle}>Note minimale</div>
+          {(versusPrefs.minRating || 0) > 0 && (
+            <button onClick={() => setVersusPrefs(p => ({ ...p, minRating: 0 }))} disabled={disabled} style={linkBtnStyle}>Désactiver</button>
+          )}
+        </div>
+        <div style={{ minHeight: 26, display: "flex", alignItems: "center", marginTop: 6 }}>
+          {(versusPrefs.minRating || 0) > 0
+            ? <StarsDisplay stars={(versusPrefs.minRating || 0) / 2} themeColors={C} size={18} />
+            : <span style={{ fontSize: 12, fontWeight: 600, color: C.inkMute }}>Aucun filtre</span>}
+        </div>
+        <input type="range" min="0" max="9" step="1"
+          value={versusPrefs.minRating || 0}
+          disabled={disabled}
+          onChange={(e) => setVersusPrefs(p => ({ ...p, minRating: parseInt(e.target.value, 10) }))}
+          className="rating-slider-vp" />
+      </div>
+
+      {/* Langues (titre aligné à gauche comme les autres, bouton à droite pour cohérence) */}
+      <div style={{ marginBottom: 18 }}>
+        <div style={titleRowStyle}>
+          <div style={titleStyle}>Langues</div>
+          <button onClick={toggleAllLangs} disabled={disabled} style={linkBtnStyle}>
+            {allLangsChecked ? "Tout décocher" : "Tout cocher"}
+          </button>
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {allLangs.map(code => {
+            const active = versusPrefs.languages.includes(code);
+            return (
+              <button key={code} onClick={() => toggleLang(code)} disabled={disabled}
+                style={{ padding: "6px 12px", borderRadius: 999,
+                  border: `1px solid ${active ? C.ink : C.hairline}`,
+                  background: active ? C.ink : C.cardBg, color: active ? C.bg : C.ink,
+                  fontFamily: "inherit", fontSize: 11, fontWeight: 600,
+                  cursor: disabled ? "not-allowed" : "pointer",
+                  opacity: disabled ? 0.6 : 1 }}>{LANGUAGES[code]}</button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Genres */}
+      <div style={{ marginBottom: 18 }}>
+        <div style={titleRowStyle}>
+          <div style={titleStyle}>Genres</div>
+          <div style={{ display: "flex", gap: 3, ...glass, padding: 2, borderRadius: 999 }}>
+            {[{ key: "include", label: "Inclure" }, { key: "exclude", label: "Exclure" }].map(({ key, label }) => {
+              const active = (versusPrefs.filterMode || "exclude") === key;
+              return (
+                <button key={key} onClick={() => setVersusPrefs(p => ({ ...p, filterMode: key }))} disabled={disabled}
+                  style={{ padding: "4px 10px", borderRadius: 999, border: "none",
+                    background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
+                    fontFamily: "inherit", fontSize: 9, fontWeight: 700,
+                    letterSpacing: 0.6, textTransform: "uppercase",
+                    cursor: disabled ? "not-allowed" : "pointer",
+                    opacity: disabled ? 0.6 : 1 }}>{label}</button>
+              );
+            })}
+          </div>
+        </div>
+        {(() => {
+          const isInclude = (versusPrefs.filterMode || "exclude") === "include";
+          const activeList = isInclude ? (versusPrefs.includeGenres || []) : (versusPrefs.excludeGenres || []);
+          const hasSelection = activeList.length > 0;
+          return (
+            <>
+              {hasSelection && (
+                <div style={{ marginBottom: 8, display: "flex", justifyContent: "flex-end" }}>
+                  <button onClick={clearGenres} disabled={disabled} style={linkBtnStyle}>Vider</button>
+                </div>
+              )}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {allGenres.map(id => {
+                  const active = activeList.map(Number).includes(Number(id));
+                  return (
+                    <button key={id} onClick={() => toggleGenre(id)} disabled={disabled}
+                      style={{ padding: "6px 12px", borderRadius: 999,
+                        border: `1px solid ${active ? C.ink : C.hairline}`,
+                        background: active ? C.ink : C.cardBg, color: active ? C.bg : C.ink,
+                        fontFamily: "inherit", fontSize: 11, fontWeight: 600,
+                        cursor: disabled ? "not-allowed" : "pointer",
+                        opacity: disabled ? 0.6 : 1,
+                        textDecoration: (!isInclude && active) ? "line-through" : "none" }}>{GENRES[id]}</button>
+                  );
+                })}
+              </div>
+            </>
+          );
+        })()}
+      </div>
+
+      {/* Réinitialiser par défaut */}
+      <div style={{ paddingTop: 14, borderTop: `1px solid ${C.hairline}` }}>
+        <button onClick={resetDefaults} disabled={disabled}
+          style={{ width: "100%", background: "transparent", border: `1px solid ${C.hairline}`,
+            borderRadius: 999, padding: "9px 16px",
+            fontSize: 10, letterSpacing: 1.2, textTransform: "uppercase",
+            cursor: disabled ? "not-allowed" : "pointer", fontFamily: "inherit", fontWeight: 700,
+            color: C.ink, opacity: disabled ? 0.5 : 1 }}>
+          Réinitialiser par défaut
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function VersusCreateScreen({ onBack, onCreated, versusPrefs, setVersusPrefs, themeColors, glass, glassDark }) {
+  const C = themeColors;
+  const [playerName, setPlayerName] = useState(getStoredPlayerName());
+  const [creating, setCreating] = useState(false);
+  const [statusLabel, setStatusLabel] = useState("");
+  const [errorMsg, setErrorMsg] = useState(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   async function handleCreate() {
     const name = playerName.trim();
@@ -3529,141 +3808,10 @@ function VersusCreateScreen({ onBack, onCreated, prefs, themeColors, glass, glas
         </button>
 
         {showAdvanced && (
-          <div style={{ ...glass, borderRadius: 16, padding: 16, marginTop: 8 }}>
-            {/* Époques */}
-            <div style={{ marginBottom: 18 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Époques</div>
-                {versusPrefs.eras?.length > 0 && (
-                  <button onClick={() => setVersusPrefs(p => ({ ...p, eras: [] }))}
-                    style={{ background: "none", border: "none", color: C.ink, fontFamily: "inherit",
-                      fontSize: 9, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
-                      cursor: "pointer", opacity: 0.7 }}>Vider</button>
-                )}
-              </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {Object.entries(ERAS).map(([key, e]) => {
-                  const active = (versusPrefs.eras || []).includes(key);
-                  return (
-                    <button key={key} onClick={() => toggleEra(key)}
-                      style={{ padding: "6px 12px", borderRadius: 999,
-                        border: `1px solid ${active ? C.ink : C.hairline}`,
-                        background: active ? C.ink : C.cardBg, color: active ? C.bg : C.ink,
-                        fontFamily: "inherit", fontSize: 11, fontWeight: 600,
-                        cursor: "pointer" }}>{e.label}</button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Note minimale (slider étoiles) */}
-            <div style={{ marginBottom: 18 }}>
-              <style>{`
-                .rating-slider-v {
-                  -webkit-appearance: none;
-                  appearance: none;
-                  width: 100%;
-                  height: 6px;
-                  border-radius: 3px;
-                  background: ${C.hairline};
-                  outline: none;
-                  margin: 12px 0 4px;
-                  cursor: pointer;
-                }
-                .rating-slider-v::-webkit-slider-thumb {
-                  -webkit-appearance: none;
-                  width: 18px; height: 18px;
-                  border-radius: 50%;
-                  background: ${C.ink};
-                  cursor: pointer;
-                  border: 2px solid ${C.bg};
-                  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-                }
-                .rating-slider-v::-moz-range-thumb {
-                  width: 18px; height: 18px;
-                  border-radius: 50%;
-                  background: ${C.ink};
-                  cursor: pointer;
-                  border: 2px solid ${C.bg};
-                }
-              `}</style>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Note minimale</div>
-                {(versusPrefs.minRating || 0) > 0 && (
-                  <button onClick={() => setVersusPrefs(p => ({ ...p, minRating: 0 }))}
-                    style={{ background: "none", border: "none", color: C.ink, fontFamily: "inherit",
-                      fontSize: 9, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
-                      cursor: "pointer", opacity: 0.7 }}>Désactiver</button>
-                )}
-              </div>
-              <div style={{ minHeight: 26, display: "flex", alignItems: "center", marginTop: 6 }}>
-                {(versusPrefs.minRating || 0) > 0
-                  ? <StarsDisplay stars={(versusPrefs.minRating || 0) / 2} themeColors={C} size={18} />
-                  : <span style={{ fontSize: 12, fontWeight: 600, color: C.inkMute }}>Aucun filtre</span>}
-              </div>
-              <input type="range" min="0" max="9" step="1"
-                value={versusPrefs.minRating || 0}
-                onChange={(e) => setVersusPrefs(p => ({ ...p, minRating: parseInt(e.target.value, 10) }))}
-                className="rating-slider-v" />
-            </div>
-
-            {/* Langues */}
-            <div style={{ marginBottom: 18 }}>
-              <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 8 }}>Langues</div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {allLangs.map(code => {
-                  const active = versusPrefs.languages.includes(code);
-                  return (
-                    <button key={code} onClick={() => toggleLang(code)}
-                      style={{ padding: "6px 12px", borderRadius: 999,
-                        border: `1px solid ${active ? C.ink : C.hairline}`,
-                        background: active ? C.ink : C.cardBg, color: active ? C.bg : C.ink,
-                        fontFamily: "inherit", fontSize: 11, fontWeight: 600,
-                        cursor: "pointer" }}>{LANGUAGES[code]}</button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Genres */}
-            <div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, gap: 8, flexWrap: "wrap" }}>
-                <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Genres</div>
-                <div style={{ display: "flex", gap: 3, ...glass, padding: 2, borderRadius: 999 }}>
-                  {[{ key: "include", label: "Inclure" }, { key: "exclude", label: "Exclure" }].map(({ key, label }) => {
-                    const active = (versusPrefs.filterMode || "exclude") === key;
-                    return (
-                      <button key={key} onClick={() => setVersusPrefs(p => ({ ...p, filterMode: key }))}
-                        style={{ padding: "4px 10px", borderRadius: 999, border: "none",
-                          background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
-                          fontFamily: "inherit", fontSize: 9, fontWeight: 700,
-                          letterSpacing: 0.6, textTransform: "uppercase",
-                          cursor: "pointer" }}>{label}</button>
-                    );
-                  })}
-                </div>
-              </div>
-              {(() => {
-                const isInclude = (versusPrefs.filterMode || "exclude") === "include";
-                const activeList = isInclude ? (versusPrefs.includeGenres || []) : (versusPrefs.excludeGenres || []);
-                return (
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                    {allGenres.map(id => {
-                      const active = activeList.map(Number).includes(Number(id));
-                      return (
-                        <button key={id} onClick={() => toggleGenre(id)}
-                          style={{ padding: "6px 12px", borderRadius: 999,
-                            border: `1px solid ${active ? C.ink : C.hairline}`,
-                            background: active ? C.ink : C.cardBg, color: active ? C.bg : C.ink,
-                            fontFamily: "inherit", fontSize: 11, fontWeight: 600,
-                            cursor: "pointer",
-                            textDecoration: (!isInclude && active) ? "line-through" : "none" }}>{GENRES[id]}</button>
-                      );
-                    })}
-                  </div>
-                );
-              })()}
-            </div>
+          <div style={{ marginTop: 8 }}>
+            <VersusFiltersPanel
+              versusPrefs={versusPrefs} setVersusPrefs={setVersusPrefs}
+              disabled={creating} themeColors={C} glass={glass} />
           </div>
         )}
       </div>
@@ -3891,13 +4039,14 @@ function VersusJoinScreen({ code, onBack, onJoined, themeColors, glass, glassDar
   );
 }
 
-function VersusLobbyScreen({ code, onBack, onStartGame, themeColors, glass, glassDark }) {
+function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPrefs, themeColors, glass, glassDark }) {
   const C = themeColors;
   const [match, setMatch] = useState(null);
   const [players, setPlayers] = useState([]);
   const [error, setError] = useState(null);
   const [shareStatus, setShareStatus] = useState(null);
   const [starting, setStarting] = useState(false);
+  const [showFilters, setShowFilters] = useState(false);
   const startedRef = useRef(false);
 
   const myToken = useMemo(() => getPlayerToken(), []);
@@ -3961,11 +4110,13 @@ function VersusLobbyScreen({ code, onBack, onStartGame, themeColors, glass, glas
     if (!match || starting) return;
     setStarting(true);
     try {
-      await startMatch(match.id);
-      // Le useEffect ci-dessus déclenchera onStartGame via l'echo realtime
+      // On régénère le défi avec les filtres courants du lobby (peuvent avoir été modifiés)
+      // + on lance la partie en un seul UPDATE atomique
+      await regenerateAndStartMatch(match.id, versusPrefs, versusPrefs.difficulty);
+      // L'echo realtime déclenchera onStartGame avec les données fraîches
     } catch (e) {
       console.error(e);
-      setError("Erreur au lancement.");
+      setError(e.message || "Erreur au lancement.");
       setStarting(false);
     }
   }
@@ -4060,6 +4211,68 @@ function VersusLobbyScreen({ code, onBack, onStartGame, themeColors, glass, glas
             themeColors={C} />
         </div>
       </div>
+
+      {/* Filtres du défi (créateur uniquement) — modifiables avant "Démarrer" */}
+      {iAmCreator && versusPrefs && setVersusPrefs && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 8 }}>Mode</div>
+            <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
+              {Object.entries(MODES).map(([key, m]) => {
+                const active = versusPrefs.mode === key;
+                return (
+                  <button key={key} onClick={() => setVersusPrefs(p => ({ ...p, mode: key }))} disabled={starting}
+                    style={{ flex: 1, padding: "9px 6px", borderRadius: 999, border: "none",
+                      background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
+                      fontFamily: "inherit", fontSize: 11, fontWeight: 700,
+                      letterSpacing: 0.5, textTransform: "uppercase",
+                      cursor: starting ? "not-allowed" : "pointer",
+                      opacity: starting ? 0.6 : 1 }}>{m.label}</button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 8 }}>Difficulté</div>
+            <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
+              {Object.entries(DIFFICULTIES).map(([key, d]) => {
+                const active = versusPrefs.difficulty === key;
+                return (
+                  <button key={key} onClick={() => setVersusPrefs(p => ({ ...p, difficulty: key }))} disabled={starting}
+                    style={{ flex: 1, padding: "8px 4px", borderRadius: 999, border: "none",
+                      background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
+                      fontFamily: "inherit", fontSize: 10, fontWeight: 600,
+                      letterSpacing: 0.4, textTransform: "uppercase",
+                      cursor: starting ? "not-allowed" : "pointer",
+                      opacity: starting ? 0.6 : 1 }}>{d.label}</button>
+                );
+              })}
+            </div>
+          </div>
+
+          <button onClick={() => setShowFilters(s => !s)} disabled={starting}
+            style={{ ...glass, borderRadius: 999, padding: "10px 18px", border: "none",
+              width: "100%", cursor: starting ? "not-allowed" : "pointer", fontFamily: "inherit",
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+              color: C.ink, fontSize: 11, fontWeight: 700, letterSpacing: 1.2, textTransform: "uppercase",
+              opacity: starting ? 0.5 : 1 }}>
+            <span>Options du défi</span>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+              style={{ transform: showFilters ? "rotate(180deg)" : "rotate(0deg)", transition: "transform .2s" }}>
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </button>
+
+          {showFilters && (
+            <div style={{ marginTop: 8 }}>
+              <VersusFiltersPanel
+                versusPrefs={versusPrefs} setVersusPrefs={setVersusPrefs}
+                disabled={starting} themeColors={C} glass={glass} />
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Action principale */}
       {bothReady ? (
