@@ -3058,7 +3058,7 @@ function VersusEndScreen({
   myName, opponentName,
   myPath, mySteps, myTimeMs, myAbandoned, myHintsUsed,
   opponentFinished, opponentAbandoned, opponentSteps,
-  opponentFinalSteps, opponentFinalTimeMs,
+  opponentFinalSteps, opponentFinalTimeMs, opponentHintsUsed,
   optimalSteps, optimalPath,
   startWork, endWork,
   onExit, onStartRematch, onJoinRematch,
