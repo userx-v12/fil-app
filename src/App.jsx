@@ -592,6 +592,16 @@ async function finishPlayer(matchPlayerId, { finalSteps, finalTimeMs, abandoned,
     .eq("id", matchPlayerId);
 }
 
+// Crée un nouveau match comme "revanche" du précédent, et marque l'ancien avec rematch_code
+async function createRematch({ previousMatchId, startWork, endWork, optimalSteps, difficulty }) {
+  const newMatch = await createMatch({ startWork, endWork, optimalSteps, difficulty });
+  await supabase
+    .from("matches")
+    .update({ rematch_code: newMatch.code })
+    .eq("id", previousMatchId);
+  return newMatch;
+}
+
 // =========================================================================
 // BFS
 // On identifie chaque œuvre par sa clé composite "id:type".
@@ -738,6 +748,51 @@ const hashId = (id) => { let h = 0; const s = String(id); for (let i = 0; i < s.
 const gradientFor = (id) => GRADIENT_PALETTE[hashId(id) % GRADIENT_PALETTE.length];
 
 const isTv = (m) => m && m.type === "tv";
+
+// =========================================================================
+// COMPOSANTS UTILITAIRES (animations)
+// =========================================================================
+
+// Trois points qui clignotent successivement, à utiliser après les textes "En attente", "Chargement", etc.
+function AnimatedDots({ color = "currentColor" }) {
+  return (
+    <span style={{ display: "inline-flex", marginLeft: 2 }}>
+      <style>{`
+        @keyframes fil-dot-blink {
+          0%, 80%, 100% { opacity: 0.15; }
+          40% { opacity: 1; }
+        }
+        .fil-dot {
+          animation: fil-dot-blink 1.4s ease-in-out infinite both;
+          display: inline-block;
+          line-height: 1;
+        }
+      `}</style>
+      <span className="fil-dot" style={{ color }}>.</span>
+      <span className="fil-dot" style={{ color, animationDelay: "0.2s" }}>.</span>
+      <span className="fil-dot" style={{ color, animationDelay: "0.4s" }}>.</span>
+    </span>
+  );
+}
+
+// Cercle qui pulse doucement (état "en attente"), passe en plein quand actif
+function WaitingDot({ active, activeColor, idleColor, size = 10 }) {
+  return (
+    <span style={{ display: "inline-block", position: "relative", width: size, height: size, flexShrink: 0 }}>
+      <style>{`
+        @keyframes fil-dot-pulse {
+          0%, 100% { opacity: 0.35; transform: scale(0.85); }
+          50%      { opacity: 0.75; transform: scale(1.05); }
+        }
+      `}</style>
+      <span style={{
+        position: "absolute", inset: 0, borderRadius: "50%",
+        background: active ? activeColor : idleColor,
+        animation: active ? "none" : "fil-dot-pulse 1.6s ease-in-out infinite both",
+      }} />
+    </span>
+  );
+}
 
 // =========================================================================
 // IMAGES
@@ -1323,6 +1378,89 @@ export default function App() {
     setScreen("menu");
   }
 
+  // Lance une revanche : créateur du match précédent → crée un nouveau match avec mêmes prefs et l'autre est invité
+  async function startRematch(previousMatch) {
+    setLoadingChallenge(true);
+    setLoadingLabel("Préparation de la revanche…");
+    setError(null);
+    try {
+      const isRandomMode = prefs.difficulty === "random";
+      let target = prefs.difficulty;
+      if (isRandomMode) target = pickWeightedDifficulty();
+      const targetRange = DIFFICULTIES[target]?.range;
+      const forHard = target === "hard";
+
+      let chosen = null;
+      let lastAttempt = null;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const { start, end } = await pickRandomPair(prefs, forHard);
+        const optimal = await findOptimalPath(start, end, 5);
+        if (!optimal || optimal.length < 3) continue;
+        const steps = Math.floor((optimal.length - 1) / 2);
+        lastAttempt = { start, end, steps };
+        if (!targetRange || (steps >= targetRange[0] && steps <= targetRange[1])) {
+          chosen = lastAttempt; break;
+        }
+      }
+      if (!chosen) chosen = lastAttempt;
+      if (!chosen) throw new Error("Aucun défi trouvé pour la revanche.");
+
+      const newMatch = await createRematch({
+        previousMatchId: previousMatch.id,
+        startWork: chosen.start, endWork: chosen.end,
+        optimalSteps: chosen.steps, difficulty: target,
+      });
+
+      // On rejoint en slot 1 (créateur de la revanche)
+      const myName = getStoredPlayerName() || "Joueur";
+      await joinMatch(newMatch.id, myName, 1);
+
+      setVersusCode(newMatch.code);
+      setVersusInURL(newMatch.code);
+      setVersusContext(null);
+      setChallenge(null);
+      setScreen("versus-lobby");
+    } catch (e) {
+      console.error(e);
+      setError(e.message);
+    } finally {
+      setLoadingChallenge(false);
+    }
+  }
+
+  // Rejoint une revanche depuis l'écran de fin Versus (côté invité)
+  async function joinRematch(rematchCode) {
+    setLoadingChallenge(true);
+    setLoadingLabel("Connexion à la revanche…");
+    setError(null);
+    try {
+      const newMatch = await getMatchByCode(rematchCode);
+      if (!newMatch) throw new Error("Revanche introuvable.");
+
+      // Vérifie si on est déjà dans cette nouvelle partie
+      const myToken = getPlayerToken();
+      const players = await getMatchPlayers(newMatch.id);
+      const me = players.find(p => p.player_token === myToken);
+
+      if (!me) {
+        // On rejoint en slot 2 (invité)
+        const myName = getStoredPlayerName() || "Joueur";
+        await joinMatch(newMatch.id, myName, 2);
+      }
+
+      setVersusCode(newMatch.code);
+      setVersusInURL(newMatch.code);
+      setVersusContext(null);
+      setChallenge(null);
+      setScreen("versus-lobby");
+    } catch (e) {
+      console.error(e);
+      setError(e.message);
+    } finally {
+      setLoadingChallenge(false);
+    }
+  }
+
   const showTopButtons = screen !== "game";
 
   return (
@@ -1366,6 +1504,8 @@ export default function App() {
               onFinished={onGameFinished}
               onRefreshPart={versusContext ? null : refreshOnePart}
               versusContext={versusContext}
+              onStartRematch={startRematch}
+              onJoinRematch={joinRematch}
               themeColors={C} glass={glass} glassDark={glassDark} theme={theme} />
       )}
       {screen === "custom" && <CustomScreen onBack={() => setScreen("menu")} onStart={startCustom}
@@ -1378,7 +1518,7 @@ export default function App() {
       {screen === "versus-create" && <VersusCreateScreen
                                 onBack={() => setScreen("multi")}
                                 onCreated={(code) => { setVersusCode(code); setVersusInURL(code); setScreen("versus-lobby"); }}
-                                prefs={prefs} setPrefs={setPrefs}
+                                prefs={prefs}
                                 themeColors={C} glass={glass} glassDark={glassDark} />}
       {screen === "versus-lobby" && versusCode && <VersusLobbyScreen
                                 code={versusCode}
@@ -1493,7 +1633,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.9</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.10</div>
     </div>
   );
 }
@@ -1844,7 +1984,7 @@ function Star({ fill, size, color, emptyColor }) {
 // GAME
 // =========================================================================
 
-function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart, versusContext, themeColors, glass, glassDark, theme }) {
+function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart, versusContext, onStartRematch, onJoinRematch, themeColors, glass, glassDark, theme }) {
   const C = themeColors;
   const isVersus = !!versusContext;
   const [path, setPath] = useState([{ type: "movie", data: challenge.start }]);
@@ -2076,8 +2216,11 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
       return (
         <GameShell elapsed={elapsed} clicks={clicks} formatTime={formatTime} onExit={onExit} muted themeColors={C} glass={glass}>
           <VersusEndScreen
+            matchId={versusContext.matchId}
+            iAmCreator={versusContext.mySlot === 1}
             myName={versusContext.myName}
             opponentName={versusContext.opponentName}
+            myPath={path}
             mySteps={playerSteps}
             myTimeMs={elapsed}
             myAbandoned={abandoned}
@@ -2091,6 +2234,8 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
             optimalPath={challenge.optimal}
             startWork={challenge.start} endWork={challenge.end}
             onExit={onExit}
+            onStartRematch={onStartRematch}
+            onJoinRematch={onJoinRematch}
             themeColors={C} glass={glass} glassDark={glassDark} />
         </GameShell>
       );
@@ -2717,13 +2862,14 @@ function VersusBanner({ myName, opponentName, mySteps, opponentSteps, opponentFi
 }
 
 function VersusEndScreen({
+  matchId, iAmCreator,
   myName, opponentName,
-  mySteps, myTimeMs, myAbandoned, myHintsUsed,
+  myPath, mySteps, myTimeMs, myAbandoned, myHintsUsed,
   opponentFinished, opponentAbandoned, opponentSteps,
   opponentFinalSteps, opponentFinalTimeMs,
   optimalSteps, optimalPath,
   startWork, endWork,
-  onExit,
+  onExit, onStartRematch, onJoinRematch,
   themeColors, glass, glassDark
 }) {
   const C = themeColors;
@@ -2734,6 +2880,75 @@ function VersusEndScreen({
   };
 
   const bothDone = opponentFinished;
+  const [opponentPath, setOpponentPath] = useState(null);
+  const [rematchCode, setRematchCode] = useState(null);
+  const [requestingRematch, setRequestingRematch] = useState(false);
+
+  // Hydrate le chemin de l'adversaire quand il a fini
+  useEffect(() => {
+    if (!bothDone) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        // Fetch son current_path et hydrate works/actors
+        const players = await getMatchPlayers(matchId);
+        if (cancelled) return;
+        const opp = players.find(p => p.player_name === opponentName);
+        if (!opp || !opp.current_path || !Array.isArray(opp.current_path) || opp.current_path.length === 0) return;
+
+        const workPairs = opp.current_path
+          .filter(n => n.type === "movie")
+          .map(n => ({ id: n.id, type: n.work_type }));
+        const actorIds = opp.current_path.filter(n => n.type === "actor").map(n => n.id);
+
+        const [works, actorsData] = await Promise.all([
+          workPairs.length > 0 ? getWorksByPairs(workPairs) : Promise.resolve([]),
+          actorIds.length > 0
+            ? supabase.from("actors").select("id, name, profile_path, popularity").in("id", actorIds).then(r => r.data || [])
+            : Promise.resolve([]),
+        ]);
+        if (cancelled) return;
+
+        const workMap = new Map((works || []).filter(Boolean).map(w => [`${w.id}:${w.type}`, w]));
+        const actorMap = new Map((actorsData || []).map(a => [a.id, a]));
+
+        const hydrated = opp.current_path.map(n => {
+          if (n.type === "movie") {
+            const w = workMap.get(`${n.id}:${n.work_type}`);
+            return { type: "movie", data: w || { id: n.id, type: n.work_type, title: "…" } };
+          } else {
+            const a = actorMap.get(n.id);
+            return { type: "actor", data: a || { id: n.id, name: "…" } };
+          }
+        });
+        setOpponentPath(hydrated);
+      } catch (e) { /* silently ignore */ }
+    })();
+    return () => { cancelled = true; };
+  }, [bothDone, matchId, opponentName]);
+
+  // Realtime : écoute si le créateur lance une revanche (rematch_code dans le match)
+  useEffect(() => {
+    if (!matchId) return;
+    let cancelled = false;
+
+    // Fetch initial : peut-être que la revanche est déjà créée
+    (async () => {
+      const { data } = await supabase.from("matches").select("rematch_code").eq("id", matchId).maybeSingle();
+      if (!cancelled && data?.rematch_code) setRematchCode(data.rematch_code);
+    })();
+
+    const channel = supabase.channel(`end-${matchId}`)
+      .on("postgres_changes", {
+        event: "UPDATE", schema: "public", table: "matches",
+        filter: `id=eq.${matchId}`,
+      }, (payload) => {
+        if (!cancelled && payload.new?.rematch_code) setRematchCode(payload.new.rematch_code);
+      })
+      .subscribe();
+
+    return () => { cancelled = true; supabase.removeChannel(channel); };
+  }, [matchId]);
 
   // Calcul du verdict si les deux ont fini
   let verdict = null;
@@ -2750,7 +2965,6 @@ function VersusEndScreen({
     } else if (mySteps > (opponentFinalSteps ?? Infinity)) {
       verdict = `${opponentName} gagne`; verdictColor = C.amber;
     } else {
-      // Même nombre d'étapes : départage au temps
       if (myTimeMs < (opponentFinalTimeMs ?? Infinity)) {
         verdict = "🏆 Tu gagnes (au temps)"; verdictColor = C.green;
       } else if (myTimeMs > (opponentFinalTimeMs ?? Infinity)) {
@@ -2758,6 +2972,26 @@ function VersusEndScreen({
       } else {
         verdict = "Égalité parfaite"; verdictColor = C.inkSoft;
       }
+    }
+  }
+
+  async function handleStartRematch() {
+    if (requestingRematch) return;
+    setRequestingRematch(true);
+    try {
+      await onStartRematch({ id: matchId });
+    } catch (e) {
+      setRequestingRematch(false);
+    }
+  }
+
+  async function handleJoinRematch() {
+    if (!rematchCode || requestingRematch) return;
+    setRequestingRematch(true);
+    try {
+      await onJoinRematch(rematchCode);
+    } catch (e) {
+      setRequestingRematch(false);
     }
   }
 
@@ -2808,10 +3042,33 @@ function VersusEndScreen({
               themeColors={C} glass={glass} />
           </div>
 
-          {optimalSteps != null && (
-            <div style={{ ...glass, borderRadius: 14, padding: "10px 14px", marginBottom: 20,
-              fontSize: 12, color: C.inkSoft, fontWeight: 600 }}>
-              Chemin optimal : <strong style={{ color: C.ink }}>{optimalSteps} étape{optimalSteps > 1 ? "s" : ""}</strong>
+          {/* Mon chemin */}
+          {myPath && myPath.length > 0 && (
+            <div style={{ ...glass, borderRadius: 16, padding: 14, marginBottom: 10, textAlign: "left" }}>
+              <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.ink, marginBottom: 10, fontWeight: 700 }}>
+                Ton parcours
+              </div>
+              <PathStrip path={myPath} themeColors={C} />
+            </div>
+          )}
+
+          {/* Chemin adversaire */}
+          {opponentPath && opponentPath.length > 0 && (
+            <div style={{ ...glass, borderRadius: 16, padding: 14, marginBottom: 10, textAlign: "left", opacity: 0.95 }}>
+              <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, marginBottom: 10, fontWeight: 700 }}>
+                Parcours de {opponentName}
+              </div>
+              <PathStrip path={opponentPath} themeColors={C} />
+            </div>
+          )}
+
+          {/* Chemin optimal */}
+          {optimalPath && optimalPath.length > 0 && (
+            <div style={{ ...glass, borderRadius: 16, padding: 14, marginBottom: 10, textAlign: "left" }}>
+              <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, marginBottom: 10, fontWeight: 700 }}>
+                Chemin optimal · {optimalSteps} étape{optimalSteps > 1 ? "s" : ""}
+              </div>
+              <OptimalPathStrip path={optimalPath} themeColors={C} />
             </div>
           )}
         </>
@@ -2821,7 +3078,9 @@ function VersusEndScreen({
             {myAbandoned ? "Tu as abandonné" : "Tu as fini !"}
           </div>
           <div style={{ fontSize: 13, color: C.inkSoft, marginBottom: 22, fontWeight: 500 }}>
-            {myAbandoned ? "On attend la fin de la partie…" : `En attente de ${opponentName}…`}
+            {myAbandoned
+              ? <>On attend la fin de la partie<AnimatedDots /></>
+              : <>En attente de {opponentName}<AnimatedDots /></>}
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
@@ -2840,8 +3099,30 @@ function VersusEndScreen({
         </>
       )}
 
-      <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap", marginTop: 10 }}>
-        <button onClick={onExit} style={btnPrimary}>Menu</button>
+      {/* Actions */}
+      <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap", marginTop: 24 }}>
+        <button onClick={onExit} style={btnSecondary}>Menu</button>
+
+        {/* Revanche : créateur uniquement, après que les deux ont fini */}
+        {bothDone && iAmCreator && !rematchCode && (
+          <button onClick={handleStartRematch} disabled={requestingRematch} style={btnPrimary}>
+            {requestingRematch ? <>Préparation<AnimatedDots color="#fff" /></> : "Revanche"}
+          </button>
+        )}
+
+        {/* Revanche dispo : invité rejoint la revanche */}
+        {bothDone && !iAmCreator && rematchCode && (
+          <button onClick={handleJoinRematch} disabled={requestingRematch} style={{ ...btnPrimary, background: C.green, boxShadow: `0 4px 14px ${C.green}66` }}>
+            {requestingRematch ? <>Connexion<AnimatedDots color="#fff" /></> : `${opponentName} propose une revanche !`}
+          </button>
+        )}
+
+        {/* Créateur en attente : la revanche a été créée, l'invité doit accepter */}
+        {bothDone && iAmCreator && rematchCode && (
+          <div style={{ fontSize: 11, color: C.inkSoft, fontWeight: 600, alignSelf: "center", letterSpacing: 1 }}>
+            Revanche prête. En attente de {opponentName}<AnimatedDots />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -3063,12 +3344,43 @@ function VersusScreen({ onBack, onCreate, onJoinManual, themeColors, glass, glas
   );
 }
 
-function VersusCreateScreen({ onBack, onCreated, prefs, setPrefs, themeColors, glass, glassDark }) {
+function VersusCreateScreen({ onBack, onCreated, prefs, themeColors, glass, glassDark }) {
   const C = themeColors;
+  // versusPrefs : COPIE indépendante des prefs au mount. Modifications ne touchent pas les prefs globales.
+  const [versusPrefs, setVersusPrefs] = useState(() => ({ ...prefs }));
   const [playerName, setPlayerName] = useState(getStoredPlayerName());
   const [creating, setCreating] = useState(false);
   const [statusLabel, setStatusLabel] = useState("");
   const [errorMsg, setErrorMsg] = useState(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const allLangs = Object.keys(LANGUAGES);
+  const allGenres = Object.keys(GENRES);
+
+  function toggleLang(code) {
+    setVersusPrefs(p => {
+      const has = p.languages.includes(code);
+      const next = has ? p.languages.filter(l => l !== code) : [...p.languages, code];
+      return { ...p, languages: next.length === 0 ? ["en"] : next };
+    });
+  }
+  function toggleGenre(id) {
+    setVersusPrefs(p => {
+      const n = Number(id);
+      const isInclude = (p.filterMode || "exclude") === "include";
+      const key = isInclude ? "includeGenres" : "excludeGenres";
+      const cur = (p[key] || []).map(Number);
+      const has = cur.includes(n);
+      return { ...p, [key]: has ? cur.filter(g => g !== n) : [...cur, n] };
+    });
+  }
+  function toggleEra(key) {
+    setVersusPrefs(p => {
+      const current = p.eras || [];
+      const has = current.includes(key);
+      return { ...p, eras: has ? current.filter(k => k !== key) : [...current, key] };
+    });
+  }
 
   async function handleCreate() {
     const name = playerName.trim();
@@ -3080,8 +3392,8 @@ function VersusCreateScreen({ onBack, onCreated, prefs, setPrefs, themeColors, g
     setErrorMsg(null);
 
     // Choisit une difficulté cible (même logique que startRandom)
-    const isRandomMode = prefs.difficulty === "random";
-    let target = prefs.difficulty;
+    const isRandomMode = versusPrefs.difficulty === "random";
+    let target = versusPrefs.difficulty;
     if (isRandomMode) target = pickWeightedDifficulty();
     const targetRange = DIFFICULTIES[target]?.range;
     const targetLabel = DIFFICULTIES[target]?.label || "défi";
@@ -3094,7 +3406,7 @@ function VersusCreateScreen({ onBack, onCreated, prefs, setPrefs, themeColors, g
       let chosen = null;
       let lastAttempt = null;
       for (let attempt = 0; attempt < 10; attempt++) {
-        const { start, end } = await pickRandomPair(prefs, forHard);
+        const { start, end } = await pickRandomPair(versusPrefs, forHard);
         const optimal = await findOptimalPath(start, end, 5);
         if (!optimal || optimal.length < 3) continue;
         const steps = Math.floor((optimal.length - 1) / 2);
@@ -3133,6 +3445,16 @@ function VersusCreateScreen({ onBack, onCreated, prefs, setPrefs, themeColors, g
     fontSize: 16, fontFamily: "inherit", color: C.ink, fontWeight: 600,
   };
 
+  // Indicateur si les options avancées sont actives (différentes des defaults)
+  const hasActiveAdvanced =
+    (versusPrefs.eras?.length || 0) > 0 ||
+    (versusPrefs.minRating || 0) > 0 ||
+    (versusPrefs.languages?.length || 0) !== DEFAULT_PREFS.languages.length ||
+    JSON.stringify((versusPrefs.languages || []).slice().sort()) !== JSON.stringify(DEFAULT_PREFS.languages.slice().sort()) ||
+    (versusPrefs.filterMode || "exclude") !== DEFAULT_PREFS.filterMode ||
+    JSON.stringify((versusPrefs.includeGenres || []).slice().sort()) !== JSON.stringify((DEFAULT_PREFS.includeGenres || []).slice().sort()) ||
+    JSON.stringify((versusPrefs.excludeGenres || []).map(Number).sort()) !== JSON.stringify((DEFAULT_PREFS.excludeGenres || []).map(Number).sort());
+
   return (
     <div style={{ minHeight: "100vh", padding: "70px 20px 40px", maxWidth: 480, margin: "0 auto" }}>
       <header style={{ display: "flex", alignItems: "center", marginBottom: 28 }}>
@@ -3151,13 +3473,13 @@ function VersusCreateScreen({ onBack, onCreated, prefs, setPrefs, themeColors, g
           style={inputStyle} />
       </div>
 
-      <div style={{ marginBottom: 22 }}>
+      <div style={{ marginBottom: 18 }}>
         <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 10 }}>Mode</div>
         <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
           {Object.entries(MODES).map(([key, m]) => {
-            const active = prefs.mode === key;
+            const active = versusPrefs.mode === key;
             return (
-              <button key={key} onClick={() => setPrefs(p => ({ ...p, mode: key }))} disabled={creating}
+              <button key={key} onClick={() => setVersusPrefs(p => ({ ...p, mode: key }))} disabled={creating}
                 style={{ flex: 1, padding: "10px 6px", borderRadius: 999, border: "none",
                   background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
                   fontFamily: "inherit", fontSize: 12, fontWeight: 700,
@@ -3169,13 +3491,13 @@ function VersusCreateScreen({ onBack, onCreated, prefs, setPrefs, themeColors, g
         </div>
       </div>
 
-      <div style={{ marginBottom: 28 }}>
+      <div style={{ marginBottom: 18 }}>
         <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 10 }}>Difficulté</div>
         <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
           {Object.entries(DIFFICULTIES).map(([key, d]) => {
-            const active = prefs.difficulty === key;
+            const active = versusPrefs.difficulty === key;
             return (
-              <button key={key} onClick={() => setPrefs(p => ({ ...p, difficulty: key }))} disabled={creating}
+              <button key={key} onClick={() => setVersusPrefs(p => ({ ...p, difficulty: key }))} disabled={creating}
                 style={{ flex: 1, padding: "9px 4px", borderRadius: 999, border: "none",
                   background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
                   fontFamily: "inherit", fontSize: 11, fontWeight: 600,
@@ -3185,7 +3507,165 @@ function VersusCreateScreen({ onBack, onCreated, prefs, setPrefs, themeColors, g
             );
           })}
         </div>
-        <div style={{ fontSize: 11, color: C.inkMute, marginTop: 6, fontWeight: 500 }}>{DIFFICULTIES[prefs.difficulty].sub}</div>
+        <div style={{ fontSize: 11, color: C.inkMute, marginTop: 6, fontWeight: 500 }}>{DIFFICULTIES[versusPrefs.difficulty].sub}</div>
+      </div>
+
+      {/* Options avancées (collapsible) */}
+      <div style={{ marginBottom: 22 }}>
+        <button onClick={() => setShowAdvanced(s => !s)} disabled={creating}
+          style={{ ...glass, borderRadius: 999, padding: "10px 18px", border: "none",
+            width: "100%", cursor: creating ? "not-allowed" : "pointer", fontFamily: "inherit",
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            color: C.ink, fontSize: 11, fontWeight: 700, letterSpacing: 1.2, textTransform: "uppercase",
+            opacity: creating ? 0.5 : 1 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            Options du défi
+            {hasActiveAdvanced && <span style={{ width: 6, height: 6, borderRadius: "50%", background: C.green }} />}
+          </span>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+            style={{ transform: showAdvanced ? "rotate(180deg)" : "rotate(0deg)", transition: "transform .2s" }}>
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+        </button>
+
+        {showAdvanced && (
+          <div style={{ ...glass, borderRadius: 16, padding: 16, marginTop: 8 }}>
+            {/* Époques */}
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Époques</div>
+                {versusPrefs.eras?.length > 0 && (
+                  <button onClick={() => setVersusPrefs(p => ({ ...p, eras: [] }))}
+                    style={{ background: "none", border: "none", color: C.ink, fontFamily: "inherit",
+                      fontSize: 9, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
+                      cursor: "pointer", opacity: 0.7 }}>Vider</button>
+                )}
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {Object.entries(ERAS).map(([key, e]) => {
+                  const active = (versusPrefs.eras || []).includes(key);
+                  return (
+                    <button key={key} onClick={() => toggleEra(key)}
+                      style={{ padding: "6px 12px", borderRadius: 999,
+                        border: `1px solid ${active ? C.ink : C.hairline}`,
+                        background: active ? C.ink : C.cardBg, color: active ? C.bg : C.ink,
+                        fontFamily: "inherit", fontSize: 11, fontWeight: 600,
+                        cursor: "pointer" }}>{e.label}</button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Note minimale (slider étoiles) */}
+            <div style={{ marginBottom: 18 }}>
+              <style>{`
+                .rating-slider-v {
+                  -webkit-appearance: none;
+                  appearance: none;
+                  width: 100%;
+                  height: 6px;
+                  border-radius: 3px;
+                  background: ${C.hairline};
+                  outline: none;
+                  margin: 12px 0 4px;
+                  cursor: pointer;
+                }
+                .rating-slider-v::-webkit-slider-thumb {
+                  -webkit-appearance: none;
+                  width: 18px; height: 18px;
+                  border-radius: 50%;
+                  background: ${C.ink};
+                  cursor: pointer;
+                  border: 2px solid ${C.bg};
+                  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+                }
+                .rating-slider-v::-moz-range-thumb {
+                  width: 18px; height: 18px;
+                  border-radius: 50%;
+                  background: ${C.ink};
+                  cursor: pointer;
+                  border: 2px solid ${C.bg};
+                }
+              `}</style>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Note minimale</div>
+                {(versusPrefs.minRating || 0) > 0 && (
+                  <button onClick={() => setVersusPrefs(p => ({ ...p, minRating: 0 }))}
+                    style={{ background: "none", border: "none", color: C.ink, fontFamily: "inherit",
+                      fontSize: 9, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
+                      cursor: "pointer", opacity: 0.7 }}>Désactiver</button>
+                )}
+              </div>
+              <div style={{ minHeight: 26, display: "flex", alignItems: "center", marginTop: 6 }}>
+                {(versusPrefs.minRating || 0) > 0
+                  ? <StarsDisplay stars={(versusPrefs.minRating || 0) / 2} themeColors={C} size={18} />
+                  : <span style={{ fontSize: 12, fontWeight: 600, color: C.inkMute }}>Aucun filtre</span>}
+              </div>
+              <input type="range" min="0" max="9" step="1"
+                value={versusPrefs.minRating || 0}
+                onChange={(e) => setVersusPrefs(p => ({ ...p, minRating: parseInt(e.target.value, 10) }))}
+                className="rating-slider-v" />
+            </div>
+
+            {/* Langues */}
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 8 }}>Langues</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {allLangs.map(code => {
+                  const active = versusPrefs.languages.includes(code);
+                  return (
+                    <button key={code} onClick={() => toggleLang(code)}
+                      style={{ padding: "6px 12px", borderRadius: 999,
+                        border: `1px solid ${active ? C.ink : C.hairline}`,
+                        background: active ? C.ink : C.cardBg, color: active ? C.bg : C.ink,
+                        fontFamily: "inherit", fontSize: 11, fontWeight: 600,
+                        cursor: "pointer" }}>{LANGUAGES[code]}</button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Genres */}
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, gap: 8, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Genres</div>
+                <div style={{ display: "flex", gap: 3, ...glass, padding: 2, borderRadius: 999 }}>
+                  {[{ key: "include", label: "Inclure" }, { key: "exclude", label: "Exclure" }].map(({ key, label }) => {
+                    const active = (versusPrefs.filterMode || "exclude") === key;
+                    return (
+                      <button key={key} onClick={() => setVersusPrefs(p => ({ ...p, filterMode: key }))}
+                        style={{ padding: "4px 10px", borderRadius: 999, border: "none",
+                          background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
+                          fontFamily: "inherit", fontSize: 9, fontWeight: 700,
+                          letterSpacing: 0.6, textTransform: "uppercase",
+                          cursor: "pointer" }}>{label}</button>
+                    );
+                  })}
+                </div>
+              </div>
+              {(() => {
+                const isInclude = (versusPrefs.filterMode || "exclude") === "include";
+                const activeList = isInclude ? (versusPrefs.includeGenres || []) : (versusPrefs.excludeGenres || []);
+                return (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {allGenres.map(id => {
+                      const active = activeList.map(Number).includes(Number(id));
+                      return (
+                        <button key={id} onClick={() => toggleGenre(id)}
+                          style={{ padding: "6px 12px", borderRadius: 999,
+                            border: `1px solid ${active ? C.ink : C.hairline}`,
+                            background: active ? C.ink : C.cardBg, color: active ? C.bg : C.ink,
+                            fontFamily: "inherit", fontSize: 11, fontWeight: 600,
+                            cursor: "pointer",
+                            textDecoration: (!isInclude && active) ? "line-through" : "none" }}>{GENRES[id]}</button>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        )}
       </div>
 
       {errorMsg && (
@@ -3207,7 +3687,7 @@ function VersusCreateScreen({ onBack, onCreated, prefs, setPrefs, themeColors, g
           fontFamily: "inherit", fontWeight: 700,
           border: "none", width: "100%",
           opacity: (creating || !playerName.trim()) ? 0.4 : 1 }}>
-        {creating ? "Création…" : "Lancer la partie"}
+        {creating ? <>Création<AnimatedDots /></> : "Lancer la partie"}
       </button>
     </div>
   );
@@ -3538,7 +4018,7 @@ function VersusLobbyScreen({ code, onBack, onStartGame, themeColors, glass, glas
       <div style={{ marginBottom: 28, textAlign: "center" }}>
         <div style={{ fontSize: 10, letterSpacing: 4, textTransform: "uppercase", color: C.inkSoft, marginBottom: 10, fontWeight: 600 }}>Versus · Salon</div>
         <h2 style={{ fontWeight: 800, fontSize: 26, margin: 0, letterSpacing: -1, lineHeight: 1.1, color: C.ink }}>
-          {bothReady ? "Prêt à jouer !" : "En attente du joueur 2…"}
+          {bothReady ? "Prêt à jouer !" : <>En attente du joueur 2<AnimatedDots /></>}
         </h2>
       </div>
 
@@ -3559,7 +4039,7 @@ function VersusLobbyScreen({ code, onBack, onStartGame, themeColors, glass, glas
             <button onClick={copyLink}
               style={{ ...glassDark, borderRadius: 999, padding: "9px 16px", cursor: "pointer",
                 fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase",
-                color: shareStatus === "link" ? C.green : "inherit", fontWeight: 700, border: "none" }}>
+                color: shareStatus === "link" ? C.green : C.glassDarkInk, fontWeight: 700, border: "none" }}>
               {shareStatus === "link" ? "✓ Lien copié" : "Copier le lien"}
             </button>
           </div>
@@ -3590,18 +4070,18 @@ function VersusLobbyScreen({ code, onBack, onStartGame, themeColors, glass, glas
               cursor: starting ? "not-allowed" : "pointer", fontFamily: "inherit", fontWeight: 700,
               border: "none", width: "100%",
               opacity: starting ? 0.5 : 1 }}>
-            {starting ? "Lancement…" : "Démarrer le défi"}
+            {starting ? <>Lancement<AnimatedDots /></> : "Démarrer le défi"}
           </button>
         ) : (
           <div style={{ textAlign: "center", fontSize: 12, color: C.inkSoft, fontWeight: 500, padding: "12px 0" }}>
-            En attente du créateur pour lancer la partie…
+            En attente du créateur pour lancer la partie<AnimatedDots />
           </div>
         )
       ) : (
         <div style={{ textAlign: "center", fontSize: 12, color: C.inkMute, fontWeight: 500, padding: "12px 0" }}>
           {iAmCreator
             ? "Partage le code ou le lien à ton ami."
-            : "Partie créée. Attendons le démarrage…"}
+            : <>Partie créée. Attendons le démarrage<AnimatedDots /></>}
         </div>
       )}
     </div>
@@ -3613,14 +4093,11 @@ function PlayerRow({ slot, name, isMe, themeColors }) {
   const ready = !!name;
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0" }}>
-      <div style={{ width: 10, height: 10, borderRadius: "50%",
-        background: ready ? C.green : "transparent",
-        border: ready ? "none" : `1.5px dashed ${C.inkMute}`,
-        flexShrink: 0 }} />
+      <WaitingDot active={ready} activeColor={C.green} idleColor={C.inkMute} size={10} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 15, fontWeight: 700, color: ready ? C.ink : C.inkMute,
           letterSpacing: -0.3, fontStyle: ready ? "normal" : "italic" }}>
-          {name || "En attente…"}
+          {ready ? name : <>En attente<AnimatedDots /></>}
           {isMe && ready && <span style={{ fontSize: 10, letterSpacing: 1.5, textTransform: "uppercase",
             color: C.inkSoft, marginLeft: 10, fontWeight: 600 }}>· toi</span>}
         </div>
