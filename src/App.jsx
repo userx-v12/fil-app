@@ -644,6 +644,96 @@ async function regenerateAndStartMatch(matchId, prefs, difficulty) {
   return data;
 }
 
+// Génère un nouveau défi (ou une partie) en fonction du target :
+// - "start" : nouveau départ, garde l'arrivée actuelle
+// - "end"   : nouvelle arrivée, garde le départ actuel
+// - "both"  : nouveau couple complet
+async function generateNewDefi({ currentStart, currentEnd, target, versusPrefs }) {
+  const isRandomMode = versusPrefs.difficulty === "random";
+  let targetDiff = versusPrefs.difficulty;
+  if (isRandomMode) targetDiff = pickWeightedDifficulty();
+  const targetRange = DIFFICULTIES[targetDiff]?.range;
+  const forHard = targetDiff === "hard";
+
+  let chosen = null;
+  let lastAttempt = null;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    let start, end;
+    if (target === "both") {
+      const pair = await pickRandomPair(versusPrefs, forHard);
+      start = pair.start; end = pair.end;
+    } else if (target === "start") {
+      start = await pickPartnerFor(currentEnd, versusPrefs, forHard);
+      end = currentEnd;
+    } else { // "end"
+      start = currentStart;
+      end = await pickPartnerFor(currentStart, versusPrefs, forHard);
+    }
+    // Évite de retomber sur les mêmes films
+    if (target === "start" && start.id === currentStart.id && start.type === currentStart.type) continue;
+    if (target === "end" && end.id === currentEnd.id && end.type === currentEnd.type) continue;
+
+    const optimal = await findOptimalPath(start, end, 5);
+    if (!optimal || optimal.length < 3) continue;
+    const steps = Math.floor((optimal.length - 1) / 2);
+    lastAttempt = { start, end, steps };
+    if (!targetRange || (steps >= targetRange[0] && steps <= targetRange[1])) {
+      chosen = lastAttempt; break;
+    }
+  }
+  if (!chosen) chosen = lastAttempt;
+  if (!chosen) throw new Error("Aucun défi trouvé.");
+  return { start: chosen.start, end: chosen.end, optimalSteps: chosen.steps, difficulty: targetDiff };
+}
+
+// Propose un changement de défi à l'autre joueur via pending_change JSONB
+async function proposeMatchChange(matchId, { proposedBySlot, target, newStart, newEnd, optimalSteps, difficulty }) {
+  // On stocke des versions allégées des œuvres pour pouvoir les afficher chez l'autre sans nouveau fetch
+  const lightWork = (w) => ({
+    id: w.id, type: w.type, title: w.title, year: w.year,
+    poster_path: w.poster_path,
+  });
+  const payload = {
+    proposed_by_slot: proposedBySlot,
+    target,
+    new_start: lightWork(newStart),
+    new_end: lightWork(newEnd),
+    optimal_steps: optimalSteps,
+    difficulty,
+    timestamp: new Date().toISOString(),
+  };
+  const { error } = await supabase
+    .from("matches")
+    .update({ pending_change: payload })
+    .eq("id", matchId);
+  if (error) throw error;
+  return payload;
+}
+
+// Applique une proposition acceptée (UPDATE start/end + clear pending_change atomiquement)
+async function acceptPendingChange(matchId, pendingChange) {
+  const { error } = await supabase
+    .from("matches")
+    .update({
+      start_id: pendingChange.new_start.id, start_type: pendingChange.new_start.type,
+      end_id: pendingChange.new_end.id,     end_type: pendingChange.new_end.type,
+      optimal_steps: pendingChange.optimal_steps,
+      difficulty: pendingChange.difficulty,
+      pending_change: null,
+    })
+    .eq("id", matchId);
+  if (error) throw error;
+}
+
+// Annule / refuse une proposition (clear simple)
+async function clearPendingChange(matchId) {
+  const { error } = await supabase
+    .from("matches")
+    .update({ pending_change: null })
+    .eq("id", matchId);
+  if (error) throw error;
+}
+
 // =========================================================================
 // BFS
 // On identifie chaque œuvre par sa clé composite "id:type".
@@ -1698,7 +1788,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.11</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.12</div>
     </div>
   );
 }
@@ -2334,6 +2424,8 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
           opponentName={versusContext.opponentName}
           mySteps={playerSteps}
           opponentSteps={opponentSteps}
+          myHintsUsed={hintsUsed}
+          opponentHintsUsed={opponentHintsUsed}
           opponentFinished={opponentFinished}
           opponentAbandoned={opponentAbandoned}
           opponentFinalSteps={opponentFinalSteps}
@@ -2904,7 +2996,7 @@ function OptimalPathStrip({ path, themeColors }) {
 // VERSUS — Composants in-game (banner + écran de fin)
 // =========================================================================
 
-function VersusBanner({ myName, opponentName, mySteps, opponentSteps, opponentFinished, opponentAbandoned, opponentFinalSteps, themeColors, glass }) {
+function VersusBanner({ myName, opponentName, mySteps, opponentSteps, myHintsUsed, opponentHintsUsed, opponentFinished, opponentAbandoned, opponentFinalSteps, themeColors, glass }) {
   const C = themeColors;
   const oppDisplay = opponentAbandoned ? "Abandon"
                    : opponentFinished  ? `${opponentFinalSteps ?? opponentSteps} ét.`
@@ -2912,6 +3004,14 @@ function VersusBanner({ myName, opponentName, mySteps, opponentSteps, opponentFi
   const oppValueColor = opponentAbandoned ? C.amber
                       : opponentFinished  ? C.green
                                           : C.versusOpponent;
+  // Pictogramme ampoule pour indiquer les indices, suivi du nombre
+  const HintIcon = ({ color }) => (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 2, fontSize: 10, fontWeight: 700, color, letterSpacing: 0, fontVariantNumeric: "tabular-nums" }}>
+      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" style={{ display: "block" }}>
+        <path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.5V17h8v-2.5A7 7 0 0 0 12 2z"/>
+      </svg>
+    </span>
+  );
   return (
     <div style={{ ...glass, borderRadius: 14, padding: "10px 14px",
       display: "flex", alignItems: "center", justifyContent: "space-between",
@@ -2922,7 +3022,15 @@ function VersusBanner({ myName, opponentName, mySteps, opponentSteps, opponentFi
           <span style={{ width: 6, height: 6, borderRadius: "50%", background: C.versusMe, display: "inline-block" }} />
           {myName} · toi
         </div>
-        <div style={{ fontSize: 16, fontWeight: 800, color: C.versusMe, letterSpacing: -0.4, fontVariantNumeric: "tabular-nums" }}>{mySteps} ét.</div>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+          <div style={{ fontSize: 16, fontWeight: 800, color: C.versusMe, letterSpacing: -0.4, fontVariantNumeric: "tabular-nums" }}>{mySteps} ét.</div>
+          {(myHintsUsed > 0) && (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 2, fontSize: 11, fontWeight: 700, color: C.versusMe, opacity: 0.75 }}>
+              <HintIcon color={C.versusMe} />
+              {myHintsUsed}
+            </span>
+          )}
+        </div>
       </div>
       <div style={{ width: 1, alignSelf: "stretch", background: C.hairline }} />
       <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", minWidth: 0, flex: 1 }}>
@@ -2931,7 +3039,15 @@ function VersusBanner({ myName, opponentName, mySteps, opponentSteps, opponentFi
           {opponentName}
           <span style={{ width: 6, height: 6, borderRadius: "50%", background: C.versusOpponent, display: "inline-block" }} />
         </div>
-        <div style={{ fontSize: 16, fontWeight: 800, color: oppValueColor, letterSpacing: -0.4, fontVariantNumeric: "tabular-nums" }}>{oppDisplay}</div>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+          {(opponentHintsUsed > 0) && (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 2, fontSize: 11, fontWeight: 700, color: C.versusOpponent, opacity: 0.75 }}>
+              <HintIcon color={C.versusOpponent} />
+              {opponentHintsUsed}
+            </span>
+          )}
+          <div style={{ fontSize: 16, fontWeight: 800, color: oppValueColor, letterSpacing: -0.4, fontVariantNumeric: "tabular-nums" }}>{oppDisplay}</div>
+        </div>
       </div>
     </div>
   );
@@ -3102,6 +3218,7 @@ function VersusEndScreen({
               steps={opponentFinalSteps ?? opponentSteps}
               timeMs={opponentFinalTimeMs}
               abandoned={opponentAbandoned}
+              hintsUsed={opponentHintsUsed}
               winner={!opponentAbandoned && !myAbandoned && (
                 (opponentFinalSteps ?? Infinity) < mySteps ||
                 ((opponentFinalSteps ?? Infinity) === mySteps && (opponentFinalTimeMs ?? Infinity) < myTimeMs)
@@ -3165,6 +3282,7 @@ function VersusEndScreen({
               steps={opponentSteps}
               inProgress
               abandoned={opponentAbandoned}
+              hintsUsed={opponentHintsUsed}
               themeColors={C} glass={glass} />
           </div>
         </>
@@ -4047,6 +4165,11 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
   const [shareStatus, setShareStatus] = useState(null);
   const [starting, setStarting] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
+  // États pour le défi affiché dans le lobby
+  const [defiWorks, setDefiWorks] = useState({ start: null, end: null });
+  // États pour la proposition de changement
+  const [refreshing, setRefreshing] = useState(null); // null | "start" | "end" | "both"
+  const [proposalAction, setProposalAction] = useState(null); // null | "accept" | "refuse"
   const startedRef = useRef(false);
 
   const myToken = useMemo(() => getPlayerToken(), []);
@@ -4054,6 +4177,10 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
   const opponent = players.find(p => p.player_token !== myToken);
   const iAmCreator = me?.slot === 1;
   const bothReady = players.length === 2;
+  const pendingChange = match?.pending_change || null;
+  const mySlot = me?.slot;
+  const iAmProposer = pendingChange && mySlot && pendingChange.proposed_by_slot === mySlot;
+  const opponentName = opponent?.player_name || "Adversaire";
 
   // Charge initial + subscribe realtime
   useEffect(() => {
@@ -4065,6 +4192,9 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
         const m = await getMatchByCode(code);
         if (cancelled) return;
         if (!m) { setError("Partie introuvable."); return; }
+        // Si on arrive sur une partie avec un pending_change orphelin, on le purge
+        // (sécurité : un client a pu fermer son onglet en plein milieu d'une proposition)
+        // Seul le créateur fait ce nettoyage, pour éviter une double-update
         setMatch(m);
         const ps = await getMatchPlayers(m.id);
         if (cancelled) return;
@@ -4096,6 +4226,19 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
     };
   }, [code]);
 
+  // Charge les œuvres du défi pour affichage. Re-fetch quand start/end changent (re-roll accepté).
+  useEffect(() => {
+    if (!match?.start_id || !match?.end_id) return;
+    let cancelled = false;
+    getWorksByPairs([
+      { id: match.start_id, type: match.start_type },
+      { id: match.end_id,   type: match.end_type   },
+    ]).then(works => {
+      if (!cancelled) setDefiWorks({ start: works[0], end: works[1] });
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [match?.start_id, match?.start_type, match?.end_id, match?.end_type]);
+
   // Auto-démarre le jeu quand le match passe en "playing"
   // (déclenché pour J1 par son click, pour J2 par l'echo realtime)
   useEffect(() => {
@@ -4110,14 +4253,79 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
     if (!match || starting) return;
     setStarting(true);
     try {
-      // On régénère le défi avec les filtres courants du lobby (peuvent avoir été modifiés)
-      // + on lance la partie en un seul UPDATE atomique
-      await regenerateAndStartMatch(match.id, versusPrefs, versusPrefs.difficulty);
-      // L'echo realtime déclenchera onStartGame avec les données fraîches
+      // En v5.12, les défis se modifient via le système de proposition (boutons 🔄).
+      // Le "Démarrer" ne fait plus que basculer en status=playing avec les films verrouillés.
+      await startMatch(match.id);
     } catch (e) {
       console.error(e);
       setError(e.message || "Erreur au lancement.");
       setStarting(false);
+    }
+  }
+
+  // Propose de changer le défi (un film ou les deux) à l'autre joueur via pending_change
+  async function handleProposeChange(target) {
+    if (!match || refreshing || pendingChange || !defiWorks.start || !defiWorks.end) return;
+    setRefreshing(target);
+    try {
+      const result = await generateNewDefi({
+        currentStart: defiWorks.start,
+        currentEnd: defiWorks.end,
+        target,
+        versusPrefs,
+      });
+      await proposeMatchChange(match.id, {
+        proposedBySlot: mySlot,
+        target,
+        newStart: result.start,
+        newEnd: result.end,
+        optimalSteps: result.optimalSteps,
+        difficulty: result.difficulty,
+      });
+      // L'echo realtime fera apparaître la proposition de notre côté aussi
+    } catch (e) {
+      console.error(e);
+      setError(e.message || "Aucun film trouvé.");
+    } finally {
+      setRefreshing(null);
+    }
+  }
+
+  async function handleAcceptChange() {
+    if (!pendingChange || proposalAction) return;
+    setProposalAction("accept");
+    try {
+      await acceptPendingChange(match.id, pendingChange);
+    } catch (e) {
+      console.error(e);
+      setError(e.message || "Erreur lors de l'acceptation.");
+    } finally {
+      setProposalAction(null);
+    }
+  }
+
+  async function handleRefuseChange() {
+    if (!pendingChange || proposalAction) return;
+    setProposalAction("refuse");
+    try {
+      await clearPendingChange(match.id);
+    } catch (e) {
+      console.error(e);
+      setError(e.message || "Erreur lors du refus.");
+    } finally {
+      setProposalAction(null);
+    }
+  }
+
+  async function handleCancelProposal() {
+    if (!pendingChange || proposalAction) return;
+    setProposalAction("refuse");
+    try {
+      await clearPendingChange(match.id);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setProposalAction(null);
     }
   }
 
@@ -4212,6 +4420,86 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
         </div>
       </div>
 
+      {/* Proposition de changement en cours (côté qui n'a pas proposé : Accepter/Refuser) */}
+      {bothReady && pendingChange && !iAmProposer && (
+        <PendingChangeBanner
+          pendingChange={pendingChange}
+          proposerName={opponentName}
+          onAccept={handleAcceptChange}
+          onRefuse={handleRefuseChange}
+          loadingAction={proposalAction}
+          themeColors={C} glass={glass} glassDark={glassDark} />
+      )}
+
+      {/* Proposition en cours (côté proposeur : Annuler) */}
+      {bothReady && pendingChange && iAmProposer && (
+        <div style={{ ...glass, borderRadius: 16, padding: "14px 16px", marginBottom: 20,
+          border: `1px solid ${C.versusMe}40` }}>
+          <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: C.versusMe, fontWeight: 700, marginBottom: 6 }}>
+            Proposition envoyée
+          </div>
+          <div style={{ fontSize: 13, color: C.inkSoft, fontWeight: 500, marginBottom: 10 }}>
+            En attente de {opponentName}<AnimatedDots />
+          </div>
+          <button onClick={handleCancelProposal} disabled={proposalAction === "refuse"}
+            style={{ background: "transparent", border: `1px solid ${C.hairline}`,
+              borderRadius: 999, padding: "7px 14px",
+              fontSize: 10, letterSpacing: 1, textTransform: "uppercase",
+              cursor: proposalAction === "refuse" ? "not-allowed" : "pointer",
+              fontFamily: "inherit", fontWeight: 700, color: C.ink,
+              opacity: proposalAction === "refuse" ? 0.5 : 1 }}>
+            {proposalAction === "refuse" ? <>Annulation<AnimatedDots /></> : "Annuler la proposition"}
+          </button>
+        </div>
+      )}
+
+      {/* Le défi en cours (affiches start/end + boutons refresh) */}
+      {defiWorks.start && defiWorks.end && (
+        <div style={{ ...glass, borderRadius: 22, padding: "20px 16px", marginBottom: 20 }}>
+          <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, marginBottom: 16, fontWeight: 600, textAlign: "center" }}>
+            Le défi
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+            <LobbyDefiSide
+              label="Départ" movie={defiWorks.start} align="left"
+              onRefresh={bothReady && !pendingChange ? () => handleProposeChange("start") : null}
+              refreshing={refreshing === "start"}
+              disabledAll={!!pendingChange || !!refreshing}
+              themeColors={C} />
+            <div style={{ flex: 1, height: 1, background: C.hairline, marginTop: 56 }} />
+            <LobbyDefiSide
+              label="Arrivée" movie={defiWorks.end} align="right"
+              onRefresh={bothReady && !pendingChange ? () => handleProposeChange("end") : null}
+              refreshing={refreshing === "end"}
+              disabledAll={!!pendingChange || !!refreshing}
+              themeColors={C} />
+          </div>
+          {/* Bouton "Nouveau défi" en bas (les deux films à la fois) */}
+          {bothReady && !pendingChange && (
+            <button onClick={() => handleProposeChange("both")} disabled={!!refreshing}
+              style={{ ...glass, borderRadius: 999, padding: "10px 16px",
+                border: `1px solid ${C.hairline}`, width: "100%", marginTop: 16,
+                fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase",
+                cursor: refreshing ? "not-allowed" : "pointer", fontFamily: "inherit",
+                color: C.ink, fontWeight: 700, opacity: refreshing ? 0.5 : 1,
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+              {refreshing === "both" ? (
+                <>Recherche<AnimatedDots /></>
+              ) : (
+                <>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="23 4 23 10 17 10"/>
+                    <polyline points="1 20 1 14 7 14"/>
+                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                  </svg>
+                  Nouveau défi
+                </>
+              )}
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Filtres du défi (créateur uniquement) — modifiables avant "Démarrer" */}
       {iAmCreator && versusPrefs && setVersusPrefs && (
         <div style={{ marginBottom: 20 }}>
@@ -4297,6 +4585,122 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
             : <>Partie créée. Attendons le démarrage<AnimatedDots /></>}
         </div>
       )}
+    </div>
+  );
+}
+
+// Affiche une "moitié" du défi (Départ ou Arrivée) avec son affiche + bouton 🔄
+function LobbyDefiSide({ label, movie, align, onRefresh, refreshing, disabledAll, themeColors }) {
+  const C = themeColors;
+  return (
+    <div style={{ textAlign: align, maxWidth: 130, display: "flex", flexDirection: "column", alignItems: align === "right" ? "flex-end" : "flex-start" }}>
+      <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkMute, marginBottom: 8, fontWeight: 600 }}>{label}</div>
+      <div style={{ position: "relative" }}>
+        <Poster movie={movie} size={80} rounded={10} themeColors={C} />
+        {onRefresh && (
+          <button onClick={onRefresh} disabled={disabledAll} title={`Proposer un nouveau ${label.toLowerCase()}`}
+            style={{ position: "absolute", top: -6, [align === "right" ? "left" : "right"]: -6,
+              width: 26, height: 26, borderRadius: "50%",
+              background: refreshing ? C.versusMe : C.ink, color: C.bg,
+              border: `2px solid ${C.bg}`,
+              cursor: disabledAll ? "not-allowed" : "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontFamily: "inherit", padding: 0,
+              boxShadow: "0 2px 8px rgba(0,0,0,0.25)",
+              opacity: disabledAll && !refreshing ? 0.35 : 1,
+              transition: "transform .15s" }}>
+            {refreshing ? (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ animation: "fil-spin 1s linear infinite" }}>
+                <style>{`@keyframes fil-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+                <polyline points="23 4 23 10 17 10"/>
+                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+              </svg>
+            ) : (
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="23 4 23 10 17 10"/>
+                <polyline points="1 20 1 14 7 14"/>
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+              </svg>
+            )}
+          </button>
+        )}
+      </div>
+      <div style={{ fontWeight: 700, fontSize: 14, lineHeight: 1.15, letterSpacing: -0.4, color: C.ink, marginTop: 8 }}>{movie.title}</div>
+      <div style={{ fontSize: 11, color: C.inkMute, marginTop: 2, fontWeight: 500 }}>{movie.year}</div>
+      {isTv(movie) && <TvLabel themeColors={C} />}
+    </div>
+  );
+}
+
+// Bannière de proposition de changement (côté de celui qui doit accepter/refuser)
+function PendingChangeBanner({ pendingChange, proposerName, onAccept, onRefuse, loadingAction, themeColors, glass, glassDark }) {
+  const C = themeColors;
+  const targetLabel = pendingChange.target === "start" ? "le départ"
+                   : pendingChange.target === "end"   ? "l'arrivée"
+                                                      : "les deux films";
+
+  return (
+    <div style={{ ...glass, borderRadius: 16, padding: "16px 16px 14px", marginBottom: 20,
+      border: `2px solid ${C.versusOpponent}` }}>
+      <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: C.versusOpponent, fontWeight: 700, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+        <span style={{ width: 7, height: 7, borderRadius: "50%", background: C.versusOpponent, display: "inline-block" }} />
+        {proposerName} propose
+      </div>
+      <div style={{ fontSize: 14, fontWeight: 700, color: C.ink, letterSpacing: -0.3, marginBottom: 12 }}>
+        Changer {targetLabel}
+      </div>
+
+      {/* Affichage des nouvelles affiches proposées */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 14,
+        padding: 12, background: C.bg + "60", borderRadius: 12 }}>
+        <ProposalSide work={pendingChange.new_start} highlight={pendingChange.target === "start" || pendingChange.target === "both"} themeColors={C} />
+        <div style={{ fontSize: 18, color: C.inkMute, fontWeight: 700 }}>↔</div>
+        <ProposalSide work={pendingChange.new_end} align="right" highlight={pendingChange.target === "end" || pendingChange.target === "both"} themeColors={C} />
+      </div>
+
+      {/* Boutons Accepter / Refuser */}
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={onRefuse} disabled={!!loadingAction}
+          style={{ ...glass, border: `1px solid ${C.hairline}`,
+            borderRadius: 999, padding: "10px 16px", flex: 1,
+            fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase",
+            cursor: loadingAction ? "not-allowed" : "pointer",
+            fontFamily: "inherit", fontWeight: 700, color: C.ink,
+            opacity: loadingAction ? 0.5 : 1 }}>
+          {loadingAction === "refuse" ? <>Refus<AnimatedDots /></> : "Refuser"}
+        </button>
+        <button onClick={onAccept} disabled={!!loadingAction}
+          style={{ background: C.green, color: "#fff", border: "none",
+            borderRadius: 999, padding: "10px 16px", flex: 1,
+            fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase",
+            cursor: loadingAction ? "not-allowed" : "pointer",
+            fontFamily: "inherit", fontWeight: 700,
+            boxShadow: `0 4px 14px ${C.green}66`,
+            opacity: loadingAction ? 0.5 : 1 }}>
+          {loadingAction === "accept" ? <>Validation<AnimatedDots color="#fff" /></> : "Accepter"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ProposalSide({ work, align = "left", highlight, themeColors }) {
+  const C = themeColors;
+  return (
+    <div style={{ textAlign: align, maxWidth: 110, display: "flex", flexDirection: "column",
+      alignItems: align === "right" ? "flex-end" : "flex-start", flex: 1 }}>
+      <div style={{ position: "relative" }}>
+        <Poster movie={work} size={56} rounded={8} themeColors={C} />
+        {highlight && (
+          <div style={{ position: "absolute", inset: -3, borderRadius: 11,
+            border: `2px solid ${C.versusOpponent}`,
+            pointerEvents: "none" }} />
+        )}
+      </div>
+      <div style={{ fontWeight: 700, fontSize: 11, lineHeight: 1.15, letterSpacing: -0.2,
+        color: C.ink, marginTop: 6,
+        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>{work.title}</div>
+      <div style={{ fontSize: 10, color: C.inkMute, marginTop: 1, fontWeight: 500 }}>{work.year}</div>
     </div>
   );
 }
