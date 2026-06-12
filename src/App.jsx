@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
+import Fuse from "fuse.js";
 
 // =========================================================================
 // SUPABASE
@@ -1057,6 +1058,8 @@ function TopRoundButton({ position, onClick, children, title, themeColors, zInde
   const C = themeColors;
   const positionStyle = position === "left"
     ? { left: "max(16px, calc(50% - 240px + 16px))" }
+    : position === "left2"
+    ? { left: "max(62px, calc(50% - 240px + 62px))" }
     : { right: "max(16px, calc(50% - 240px + 16px))" };
   return (
     <button onClick={onClick} title={title}
@@ -1624,7 +1627,10 @@ export default function App() {
       <Fonts />
       {showTopButtons && (
         <>
-          <TopRoundButton position="left" onClick={toggleTheme} title={theme === "light" ? "Mode sombre" : "Mode clair"} themeColors={C}>
+          <TopRoundButton position="left" onClick={() => setShowInfo(true)} title="Comment jouer" themeColors={C}>
+            <span style={{ fontSize: 16, fontWeight: 700, lineHeight: 1 }}>?</span>
+          </TopRoundButton>
+          <TopRoundButton position="left2" onClick={toggleTheme} title={theme === "light" ? "Mode sombre" : "Mode clair"} themeColors={C}>
             <ThemeIcon isLight={theme === "light"} color={C.ink} />
           </TopRoundButton>
           <TopRoundButton position="right" onClick={() => setScreen("account")} title="Compte" themeColors={C}>
@@ -1650,7 +1656,7 @@ export default function App() {
         <Menu onNavigate={setScreen} onPlay={startRandom}
               prefs={prefs} setPrefs={setPrefs}
               themeColors={C} glass={glass} glassDark={glassDark}
-              gamesPlayed={gamesPlayed} onOpenInfo={() => setShowInfo(true)} />
+              gamesPlayed={gamesPlayed} />
       )}
       {screen === "game" && challenge && (
         <Game key={gameKey} challenge={challenge}
@@ -1721,7 +1727,7 @@ function Fonts() {
 // MENU PRINCIPAL
 // =========================================================================
 
-function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDark, gamesPlayed, onOpenInfo }) {
+function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDark, gamesPlayed }) {
   const C = themeColors;
   const items = [
     { key: "play", label: "Jouer", sub: "Défi aléatoire", action: onPlay, primary: true },
@@ -1743,12 +1749,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         <h1 style={{ fontFamily: "'Manrope', sans-serif", fontWeight: 700, fontSize: 56, lineHeight: .95,
           letterSpacing: -3, margin: 0, color: C.ink }}>Fil</h1>
         <div style={{ fontSize: 11, letterSpacing: 4, textTransform: "uppercase", color: C.inkSoft, marginTop: 14, fontWeight: 500 }}>Relie les films</div>
-        <button onClick={onOpenInfo}
-          style={{ background: "none", border: "none", color: C.inkSoft, fontFamily: "inherit",
-            fontSize: 11, letterSpacing: 1.5, marginTop: 10, cursor: "pointer",
-            padding: "6px 12px", borderRadius: 999,
-            textDecoration: "underline", textUnderlineOffset: 3,
-            opacity: 0.7, fontWeight: 500 }}>Comment jouer ?</button>
+
         {gamesPlayed > 0 && (
           <div style={{ fontSize: 10, letterSpacing: 2, color: C.inkMute, marginTop: 10, fontWeight: 500 }}>
             {gamesPlayed} {gamesPlayed > 1 ? "parties jouées" : "partie jouée"}
@@ -2656,6 +2657,10 @@ function Trail({ path, themeColors, glass }) {
 function ActorPicker({ title, actors, onPick, greenId, yellowIds, sort, onToggleSort, themeColors, glass }) {
   const C = themeColors;
   const [expanded, setExpanded] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const searchRef = useRef(null);
+
   const sorted = useMemo(() => {
     const copy = [...actors];
     if (sort === "ord") {
@@ -2666,16 +2671,38 @@ function ActorPicker({ title, actors, onPick, greenId, yellowIds, sort, onToggle
     return copy;
   }, [actors, sort]);
 
-  const visible = expanded ? sorted : sorted.slice(0, CAST_DISPLAY_DEFAULT);
+  const displayed = useMemo(() => {
+    if (!searchQuery.trim()) return null;
+    const fuse = new Fuse(sorted, { keys: ["name"], threshold: 0.4, minMatchCharLength: 2 });
+    return fuse.search(searchQuery.trim()).map(r => r.item);
+  }, [sorted, searchQuery]);
+
+  const isSearching = !!displayed;
+  const visible = isSearching ? displayed : (expanded ? sorted : sorted.slice(0, CAST_DISPLAY_DEFAULT));
   const hiddenCount = Math.max(0, sorted.length - CAST_DISPLAY_DEFAULT);
+
+  function toggleSearch() {
+    setShowSearch(s => {
+      if (s) setSearchQuery("");
+      return !s;
+    });
+    if (!showSearch) setTimeout(() => searchRef.current?.focus(), 50);
+  }
 
   return (
     <div style={{ ...glass, borderRadius: 20, padding: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 6px 12px", gap: 10 }}>
         <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, fontWeight: 600, flex: 1, minWidth: 0,
           whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{title}</div>
+        <button onClick={toggleSearch} title="Rechercher"
+          style={{ background: "none", border: "none", cursor: "pointer", padding: 4,
+            color: showSearch ? C.ink : C.inkSoft, opacity: showSearch ? 1 : 0.6, display: "flex", alignItems: "center" }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+        </button>
         {onToggleSort && (
-          <div style={{ width: 125, flexShrink: 0, display: "flex", justifyContent: "flex-end" }}>
+          <div style={{ flexShrink: 0, display: "flex", justifyContent: "flex-end" }}>
             <button onClick={onToggleSort}
               style={{ background: "none", border: "none", color: C.inkSoft, fontFamily: "inherit",
                 fontSize: 10, fontWeight: 600, letterSpacing: 0.8, textTransform: "uppercase",
@@ -2689,7 +2716,19 @@ function ActorPicker({ title, actors, onPick, greenId, yellowIds, sort, onToggle
           </div>
         )}
       </div>
+      {showSearch && (
+        <div style={{ marginBottom: 10, paddingBottom: 10, borderBottom: `1px solid ${C.hairline}` }}>
+          <input ref={searchRef} value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+            placeholder="Rechercher un acteur…"
+            style={{ width: "100%", boxSizing: "border-box", background: C.cardBg, border: `1px solid ${C.hairline}`,
+              borderRadius: 10, padding: "8px 12px", fontSize: 13, fontFamily: "inherit",
+              color: C.ink, outline: "none" }} />
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+        {visible.length === 0 && isSearching && (
+          <div style={{ gridColumn: "1 / -1", padding: "16px 0", fontSize: 13, color: C.inkSoft, textAlign: "center" }}>Aucun résultat</div>
+        )}
         {visible.map(a => {
           const isGreen = greenId && a.id === greenId;
           const isYellow = !isGreen && yellowIds && yellowIds.has(a.id);
@@ -2710,7 +2749,7 @@ function ActorPicker({ title, actors, onPick, greenId, yellowIds, sort, onToggle
           );
         })}
       </div>
-      {hiddenCount > 0 && (
+      {!isSearching && hiddenCount > 0 && (
         <button onClick={() => setExpanded(e => !e)}
           style={{ marginTop: 12, width: "100%", background: "transparent",
             border: `1px solid ${C.hairline}`, borderRadius: 12, padding: "10px 14px",
@@ -2727,6 +2766,10 @@ function ActorPicker({ title, actors, onPick, greenId, yellowIds, sort, onToggle
 
 function MoviePicker({ title, movies, targetWork, onPick, onClose, greenWork, yellowKeys, sort, onToggleSort, themeColors, glass }) {
   const C = themeColors;
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const searchRef = useRef(null);
+
   const sorted = useMemo(() => {
     const copy = [...movies];
     if (sort === "date") {
@@ -2737,12 +2780,36 @@ function MoviePicker({ title, movies, targetWork, onPick, onClose, greenWork, ye
     return copy;
   }, [movies, sort]);
 
+  const displayed = useMemo(() => {
+    if (!searchQuery.trim()) return null;
+    const fuse = new Fuse(sorted, { keys: ["title"], threshold: 0.4, minMatchCharLength: 2 });
+    return fuse.search(searchQuery.trim()).map(r => r.item);
+  }, [sorted, searchQuery]);
+
+  const isSearching = !!displayed;
+  const visible = isSearching ? displayed : sorted;
+
+  function toggleSearch() {
+    setShowSearch(s => {
+      if (s) setSearchQuery("");
+      return !s;
+    });
+    if (!showSearch) setTimeout(() => searchRef.current?.focus(), 50);
+  }
+
   return (
     <div style={{ ...glass, borderRadius: 20, padding: 6 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px 6px", gap: 10 }}>
         <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, fontWeight: 600, flex: 1, minWidth: 0,
           whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{title}</div>
-        <div style={{ width: 105, flexShrink: 0, display: "flex", justifyContent: "flex-end" }}>
+        <button onClick={toggleSearch} title="Rechercher"
+          style={{ background: "none", border: "none", cursor: "pointer", padding: 4,
+            color: showSearch ? C.ink : C.inkSoft, opacity: showSearch ? 1 : 0.6, display: "flex", alignItems: "center" }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+        </button>
+        <div style={{ flexShrink: 0, display: "flex", justifyContent: "flex-end" }}>
           <button onClick={onToggleSort}
             style={{ background: "none", border: "none", color: C.inkSoft, fontFamily: "inherit",
               fontSize: 10, fontWeight: 600, letterSpacing: 0.8, textTransform: "uppercase",
@@ -2756,11 +2823,22 @@ function MoviePicker({ title, movies, targetWork, onPick, onClose, greenWork, ye
         </div>
         <button onClick={onClose} style={{ ...iconBtn(C), fontSize: 14 }}>✕</button>
       </div>
+      {showSearch && (
+        <div style={{ padding: "0 8px 8px" }}>
+          <input ref={searchRef} value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+            placeholder="Rechercher un film ou une série…"
+            style={{ width: "100%", boxSizing: "border-box", background: C.cardBg, border: `1px solid ${C.hairline}`,
+              borderRadius: 10, padding: "8px 12px", fontSize: 13, fontFamily: "inherit",
+              color: C.ink, outline: "none" }} />
+        </div>
+      )}
       <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 420, overflowY: "auto" }}>
-        {sorted.length === 0 && (
-          <div style={{ padding: 24, fontSize: 13, color: C.inkSoft, textAlign: "center" }}>Aucune autre œuvre trouvée.</div>
+        {visible.length === 0 && (
+          <div style={{ padding: 24, fontSize: 13, color: C.inkSoft, textAlign: "center" }}>
+            {isSearching ? "Aucun résultat" : "Aucune autre œuvre trouvée."}
+          </div>
         )}
-        {sorted.map(m => {
+        {visible.map(m => {
           const isTarget = targetWork && m.id === targetWork.id && m.type === targetWork.type;
           const isGreen = greenWork && m.id === greenWork.id && m.type === greenWork.type;
           const isYellow = !isGreen && yellowKeys && yellowKeys.has(`${m.id}:${m.type}`);
