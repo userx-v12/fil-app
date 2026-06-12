@@ -68,9 +68,9 @@ const DEFAULT_PREFS = {
   mode: "movie",
   difficulty: "random",
   languages: ["en", "fr"],
-  filterMode: "exclude",
-  includeGenres: [],
-  excludeGenres: [16, 99],
+  filterMode: "include",
+  includeGenres: [28, 12, 35, 80, 18, 10751, 14, 36, 27, 10402, 9648, 10749, 878, 10770, 53, 10752, 37],
+  excludeGenres: [],
   eras: [],
   minRating: 7,
 };
@@ -348,7 +348,8 @@ async function getMovieCastsBatch(workPairs) {
     }
     for (const p of missing) {
       const key = `${p.id}:${p.type}`;
-      setCachedCast(p.id, p.type, (grouped.get(key) || []).slice(0, CAST_LIMIT));
+      const actors = (grouped.get(key) || []).slice(0, CAST_LIMIT);
+      if (actors.length > 0) setCachedCast(p.id, p.type, actors);
     }
   }
   return workPairs.map(p => ({
@@ -374,7 +375,8 @@ async function getActorMoviesBatch(actorIds) {
       grouped.get(r.actor_id).push(r.works);
     }
     for (const id of missing) {
-      setCachedFilmo(id, (grouped.get(id) || []).filter(Boolean).slice(0, ACTOR_FILMO_LIMIT));
+      const films = (grouped.get(id) || []).filter(Boolean).slice(0, ACTOR_FILMO_LIMIT);
+      if (films.length > 0) setCachedFilmo(id, films);
     }
   }
   return actorIds.map(id => ({ actorId: id, movies: getCachedFilmo(id) || [] }));
@@ -1320,7 +1322,7 @@ export default function App() {
       ? "Recherche d'un défi…"
       : `Recherche d'un défi ${targetLabel.toLowerCase()}…`);
 
-    const MAX_TRIES = 10;
+    const MAX_TRIES = forHard ? 25 : 10;
     let lastAttempt = null;
 
     try {
@@ -1384,7 +1386,7 @@ export default function App() {
     setLoadingLabel(`Nouveau ${which === "start" ? "départ" : "arrivée"}…`);
     setError(null);
 
-    const MAX_TRIES = 10;
+    const MAX_TRIES = forHard ? 25 : 10;
     let lastAttempt = null;
 
     try {
@@ -1816,18 +1818,17 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
   function toggleGenre(id) {
     setPrefs(p => {
       const n = Number(id);
-      const isInclude = (p.filterMode || "exclude") === "include";
-      const key = isInclude ? "includeGenres" : "excludeGenres";
-      const cur = (p[key] || []).map(Number);
+      const cur = (p.includeGenres || []).map(Number);
       const has = cur.includes(n);
-      return { ...p, [key]: has ? cur.filter(g => g !== n) : [...cur, n] };
+      return { ...p, filterMode: "include", includeGenres: has ? cur.filter(g => g !== n) : [...cur, n] };
     });
   }
-  function clearGenres() {
-    setPrefs(p => {
-      const isInclude = (p.filterMode || "exclude") === "include";
-      return { ...p, [isInclude ? "includeGenres" : "excludeGenres"]: [] };
-    });
+  const allGenresChecked = allGenres.length === (prefs.includeGenres || []).length;
+  function toggleAllGenres() {
+    setPrefs(p => ({
+      ...p, filterMode: "include",
+      includeGenres: allGenresChecked ? [] : allGenres.map(Number),
+    }));
   }
   function toggleEra(key) {
     setPrefs(p => {
@@ -1883,178 +1884,147 @@ function OptionsScreen({ onBack, prefs, setPrefs, themeColors, glass }) {
         <div style={{ fontSize: 11, color: C.inkMute, marginTop: 6, fontWeight: 500 }}>{DIFFICULTIES[prefs.difficulty].sub}</div>
       </div>
 
-      <div style={{ marginBottom: 28 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-          <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Époques</div>
-          {prefs.eras?.length > 0 && (
-            <button onClick={() => setPrefs(p => ({ ...p, eras: [] }))}
-              style={{ background: "none", border: "none", color: C.ink, fontFamily: "inherit",
-                fontSize: 10, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
-                cursor: "pointer", opacity: 0.75 }}>Tout décocher</button>
-          )}
-        </div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-          {Object.entries(ERAS).map(([key, e]) => {
-            const active = (prefs.eras || []).includes(key);
-            return (
-              <button key={key} onClick={() => toggleEra(key)}
-                style={{ padding: "8px 14px", borderRadius: 999,
-                  border: `1px solid ${active ? C.ink : C.hairline}`,
-                  background: active ? C.ink : C.cardBg, color: active ? C.bg : C.ink,
-                  fontFamily: "inherit", fontSize: 12, fontWeight: 600,
-                  cursor: "pointer", transition: "all .15s" }}>{e.label}</button>
-            );
-          })}
-        </div>
-        <div style={{ fontSize: 11, color: C.inkMute, marginTop: 10, fontWeight: 500, lineHeight: 1.4 }}>
-          {(prefs.eras || []).length === 0
-            ? "Aucun filtre actif : toutes les époques sont incluses."
-            : "Films et séries des époques sélectionnées uniquement."}
-        </div>
-      </div>
-
-      <div style={{ marginBottom: 28 }}>
-        <style>{`
-          .rating-slider {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 100%;
-            height: 6px;
-            border-radius: 3px;
-            background: ${C.hairline};
-            outline: none;
-            margin: 14px 0 6px;
-            cursor: pointer;
-          }
-          .rating-slider::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 20px;
-            height: 20px;
-            border-radius: 50%;
-            background: ${C.ink};
-            cursor: pointer;
-            border: 2px solid ${C.bg};
-            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-            transition: transform .15s;
-          }
-          .rating-slider::-webkit-slider-thumb:hover {
-            transform: scale(1.15);
-          }
-          .rating-slider::-moz-range-thumb {
-            width: 20px;
-            height: 20px;
-            border-radius: 50%;
-            background: ${C.ink};
-            cursor: pointer;
-            border: 2px solid ${C.bg};
-            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-          }
-        `}</style>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-          <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Note minimale</div>
-          {(prefs.minRating || 0) > 0 && (
-            <button onClick={() => setPrefs(p => ({ ...p, minRating: 0 }))}
-              style={{ background: "none", border: "none", color: C.ink, fontFamily: "inherit",
-                fontSize: 10, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
-                cursor: "pointer", opacity: 0.75 }}>Désactiver</button>
-          )}
-        </div>
-        <div style={{ marginTop: 8, marginBottom: 4, minHeight: 28, display: "flex", alignItems: "center" }}>
-          {(prefs.minRating || 0) > 0
-            ? <StarsDisplay stars={(prefs.minRating || 0) / 2} themeColors={C} size={22} />
-            : <span style={{ fontSize: 14, fontWeight: 600, color: C.inkMute }}>Aucun filtre</span>}
-        </div>
-        <input type="range" min="0" max="9" step="1"
-          value={prefs.minRating || 0}
-          onChange={(e) => setPrefs(p => ({ ...p, minRating: parseInt(e.target.value, 10) }))}
-          className="rating-slider" />
-        <div style={{ fontSize: 11, color: C.inkMute, marginTop: 10, fontWeight: 500, lineHeight: 1.4 }}>
-          Ne tire que des œuvres dont la note moyenne TMDb dépasse ce seuil. Évite les films oubliables.
-        </div>
-      </div>
-
-      <div style={{ marginBottom: 28 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-          <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Langues acceptées</div>
-          <button onClick={toggleAllLangs}
-            style={{ background: "none", border: "none", color: C.ink, fontFamily: "inherit",
-              fontSize: 10, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
-              cursor: "pointer", opacity: 0.75 }}>{allLangsChecked ? "Tout décocher" : "Tout cocher"}</button>
-        </div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-          {allLangs.map(code => {
-            const active = prefs.languages.includes(code);
-            return (
-              <button key={code} onClick={() => toggleLang(code)}
-                style={{ padding: "8px 14px", borderRadius: 999,
-                  border: `1px solid ${active ? C.ink : C.hairline}`,
-                  background: active ? C.ink : C.cardBg, color: active ? C.bg : C.ink,
-                  fontFamily: "inherit", fontSize: 12, fontWeight: 600,
-                  cursor: "pointer", transition: "all .15s" }}>{LANGUAGES[code]}</button>
-            );
-          })}
-        </div>
-      </div>
-
-      <div style={{ marginBottom: 28 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 10, flexWrap: "wrap" }}>
-          <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Genres</div>
-          <div style={{ display: "flex", gap: 4, ...glass, padding: 3, borderRadius: 999 }}>
-            {[{ key: "include", label: "Inclure" }, { key: "exclude", label: "Exclure" }].map(({ key, label }) => {
-              const active = (prefs.filterMode || "exclude") === key;
+      <div style={{ ...glass, borderRadius: 16, padding: 16, marginBottom: 28 }}>
+        {/* Époques */}
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Époques</div>
+            {prefs.eras?.length > 0 && (
+              <button onClick={() => setPrefs(p => ({ ...p, eras: [] }))}
+                style={{ background: "none", border: "none", color: C.ink, fontFamily: "inherit",
+                  fontSize: 9, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
+                  cursor: "pointer", opacity: 0.75 }}>Tout décocher</button>
+            )}
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {Object.entries(ERAS).map(([key, e]) => {
+              const active = (prefs.eras || []).includes(key);
               return (
-                <button key={key} onClick={() => setPrefs(p => ({ ...p, filterMode: key }))}
-                  style={{ padding: "6px 14px", borderRadius: 999, border: "none",
-                    background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
-                    fontFamily: "inherit", fontSize: 10, fontWeight: 700,
-                    letterSpacing: 0.8, textTransform: "uppercase",
-                    cursor: "pointer", transition: "background .15s" }}>{label}</button>
+                <button key={key} onClick={() => toggleEra(key)}
+                  style={{ padding: "6px 12px", borderRadius: 999,
+                    border: `1px solid ${active ? C.ink : C.hairline}`,
+                    background: active ? C.ink : C.cardBg, color: active ? C.bg : C.ink,
+                    fontFamily: "inherit", fontSize: 11, fontWeight: 600,
+                    cursor: "pointer", transition: "all .15s" }}>{e.label}</button>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: 11, color: C.inkMute, marginTop: 8, fontWeight: 500, lineHeight: 1.4 }}>
+            {(prefs.eras || []).length === 0
+              ? "Aucun filtre actif : toutes les époques sont incluses."
+              : "Films et séries des époques sélectionnées uniquement."}
+          </div>
+        </div>
+
+        {/* Note minimale */}
+        <div style={{ marginBottom: 18 }}>
+          <style>{`
+            .rating-slider {
+              -webkit-appearance: none;
+              appearance: none;
+              width: 100%;
+              height: 6px;
+              border-radius: 3px;
+              background: ${C.hairline};
+              outline: none;
+              margin: 12px 0 4px;
+              cursor: pointer;
+            }
+            .rating-slider::-webkit-slider-thumb {
+              -webkit-appearance: none;
+              appearance: none;
+              width: 18px;
+              height: 18px;
+              border-radius: 50%;
+              background: ${C.ink};
+              cursor: pointer;
+              border: 2px solid ${C.bg};
+              box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+            }
+            .rating-slider::-moz-range-thumb {
+              width: 18px;
+              height: 18px;
+              border-radius: 50%;
+              background: ${C.ink};
+              cursor: pointer;
+              border: 2px solid ${C.bg};
+            }
+          `}</style>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Note minimale</div>
+            {(prefs.minRating || 0) > 0 && (
+              <button onClick={() => setPrefs(p => ({ ...p, minRating: 0 }))}
+                style={{ background: "none", border: "none", color: C.ink, fontFamily: "inherit",
+                  fontSize: 9, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
+                  cursor: "pointer", opacity: 0.75 }}>Désactiver</button>
+            )}
+          </div>
+          <div style={{ minHeight: 26, display: "flex", alignItems: "center", marginTop: 6 }}>
+            {(prefs.minRating || 0) > 0
+              ? <StarsDisplay stars={(prefs.minRating || 0) / 2} themeColors={C} size={18} />
+              : <span style={{ fontSize: 12, fontWeight: 600, color: C.inkMute }}>Aucun filtre</span>}
+          </div>
+          <input type="range" min="0" max="9" step="1"
+            value={prefs.minRating || 0}
+            onChange={(e) => setPrefs(p => ({ ...p, minRating: parseInt(e.target.value, 10) }))}
+            className="rating-slider" />
+          <div style={{ fontSize: 11, color: C.inkMute, marginTop: 8, fontWeight: 500, lineHeight: 1.4 }}>
+            Ne tire que des œuvres dont la note moyenne TMDb dépasse ce seuil. Évite les films oubliables.
+          </div>
+        </div>
+
+        {/* Langues */}
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Langues acceptées</div>
+            <button onClick={toggleAllLangs}
+              style={{ background: "none", border: "none", color: C.ink, fontFamily: "inherit",
+                fontSize: 9, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
+                cursor: "pointer", opacity: 0.75 }}>{allLangsChecked ? "Tout décocher" : "Tout cocher"}</button>
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {allLangs.map(code => {
+              const active = prefs.languages.includes(code);
+              return (
+                <button key={code} onClick={() => toggleLang(code)}
+                  style={{ padding: "6px 12px", borderRadius: 999,
+                    border: `1px solid ${active ? C.ink : C.hairline}`,
+                    background: active ? C.ink : C.cardBg, color: active ? C.bg : C.ink,
+                    fontFamily: "inherit", fontSize: 11, fontWeight: 600,
+                    cursor: "pointer", transition: "all .15s" }}>{LANGUAGES[code]}</button>
               );
             })}
           </div>
         </div>
 
-        {(() => {
-          const isInclude = (prefs.filterMode || "exclude") === "include";
-          const activeList = isInclude ? (prefs.includeGenres || []) : (prefs.excludeGenres || []);
-          const hasSelection = activeList.length > 0;
-          return (
-            <>
-              {hasSelection && (
-                <div style={{ marginBottom: 10, display: "flex", justifyContent: "flex-end" }}>
-                  <button onClick={clearGenres}
-                    style={{ background: "none", border: "none", color: C.ink, fontFamily: "inherit",
-                      fontSize: 10, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
-                      cursor: "pointer", opacity: 0.75 }}>Vider</button>
-                </div>
-              )}
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {allGenres.map(id => {
-                  const active = activeList.map(Number).includes(Number(id));
-                  return (
-                    <button key={id} onClick={() => toggleGenre(id)}
-                      style={{ padding: "8px 14px", borderRadius: 999,
-                        border: `1px solid ${active ? C.ink : C.hairline}`,
-                        background: active ? C.ink : C.cardBg, color: active ? C.bg : C.ink,
-                        fontFamily: "inherit", fontSize: 12, fontWeight: 600,
-                        cursor: "pointer", transition: "all .15s",
-                        textDecoration: (!isInclude && active) ? "line-through" : "none" }}>{GENRES[id]}</button>
-                  );
-                })}
-              </div>
-              <div style={{ fontSize: 11, color: C.inkMute, marginTop: 10, fontWeight: 500, lineHeight: 1.4 }}>
-                {isInclude
-                  ? (hasSelection
-                      ? "Seuls les genres cochés seront tirés comme départ ou arrivée."
-                      : "Aucun filtre actif : tous les genres sont autorisés.")
-                  : (hasSelection
-                      ? "Les genres barrés ne seront pas tirés comme départ ou arrivée."
-                      : "Aucun filtre actif : tous les genres sont autorisés.")}
-              </div>
-            </>
-          );
-        })()}
+        {/* Genres */}
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700 }}>Genres acceptés</div>
+            <button onClick={toggleAllGenres}
+              style={{ background: "none", border: "none", color: C.ink, fontFamily: "inherit",
+                fontSize: 9, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
+                cursor: "pointer", opacity: 0.75 }}>{allGenresChecked ? "Tout décocher" : "Tout cocher"}</button>
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {allGenres.map(id => {
+              const active = (prefs.includeGenres || []).map(Number).includes(Number(id));
+              return (
+                <button key={id} onClick={() => toggleGenre(id)}
+                  style={{ padding: "6px 12px", borderRadius: 999,
+                    border: `1px solid ${active ? C.ink : C.hairline}`,
+                    background: active ? C.ink : C.cardBg, color: active ? C.bg : C.ink,
+                    fontFamily: "inherit", fontSize: 11, fontWeight: 600,
+                    cursor: "pointer", transition: "all .15s" }}>{GENRES[id]}</button>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: 11, color: C.inkMute, marginTop: 8, fontWeight: 500, lineHeight: 1.4 }}>
+            {(prefs.includeGenres || []).length === 0
+              ? "Aucun filtre actif : tous les genres sont autorisés."
+              : "Seuls les genres cochés seront tirés comme départ ou arrivée."}
+          </div>
+        </div>
       </div>
 
       <div style={{ marginTop: 28, paddingTop: 20, borderTop: `1px solid ${C.hairline}`, display: "flex", flexDirection: "column", gap: 10 }}>
@@ -2148,6 +2118,8 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
   const [selectedActor, setSelectedActor] = useState(null);
   const [loadingCast, setLoadingCast] = useState(false);
   const [loadingFilmo, setLoadingFilmo] = useState(false);
+  const [castReloadEmpty, setCastReloadEmpty] = useState(false);
+  const [filmoReloadEmpty, setFilmoReloadEmpty] = useState(false);
   const [startTime] = useState(Date.now());
   const [elapsed, setElapsed] = useState(0);
   const [clicks, setClicks] = useState(0);
@@ -2269,6 +2241,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
   useEffect(() => {
     if (selectedActor) return;
     let cancelled = false;
+    setCastReloadEmpty(false);
     setLoadingCast(true);
     setCastOfCurrent(null);
     getMovieCast(currentMovie.id, currentMovie.type, 30).then(cast => {
@@ -2280,6 +2253,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
   useEffect(() => {
     if (!selectedActor) return;
     let cancelled = false;
+    setFilmoReloadEmpty(false);
     setLoadingFilmo(true);
     setFilmoOfActor(null);
     getActorMovies(selectedActor.id, currentMovie.id, currentMovie.type, ACTOR_FILMO_LIMIT)
@@ -2296,6 +2270,24 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
       });
     return () => { cancelled = true; };
   }, [selectedActor, currentMovie.id, currentMovie.type]);
+
+  function reloadCast() {
+    castCache.delete(`${currentMovie.id}:${currentMovie.type}`);
+    setLoadingCast(true);
+    setCastOfCurrent(null);
+    getMovieCast(currentMovie.id, currentMovie.type, 30)
+      .then(cast => { setCastOfCurrent(cast); setLoadingCast(false); if (!cast.length) setCastReloadEmpty(true); })
+      .catch(e => { console.error(e); setLoadingCast(false); setCastReloadEmpty(true); });
+  }
+
+  function reloadFilmo() {
+    filmoCache.delete(selectedActor.id);
+    setLoadingFilmo(true);
+    setFilmoOfActor(null);
+    getActorMovies(selectedActor.id, currentMovie.id, currentMovie.type, ACTOR_FILMO_LIMIT)
+      .then(movies => { setFilmoOfActor(movies || []); setLoadingFilmo(false); if (!movies?.length) setFilmoReloadEmpty(true); })
+      .catch(e => { console.error(e); setFilmoOfActor([]); setLoadingFilmo(false); setFilmoReloadEmpty(true); });
+  }
 
   const playerSteps = Math.max(0, Math.floor((path.length - 1) / 2));
   const formatTime = (ms) => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
@@ -2443,21 +2435,35 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
       <div className="fadeUp" key={path.length + (selectedActor?.id || "")} style={{ marginTop: 24 }}>
         {!selectedActor ? (
           loadingCast ? <Spinner label="Chargement du casting" themeColors={C} /> :
-          castOfCurrent && <ActorPicker title={`Casting · ${currentMovie.title}`} actors={castOfCurrent} onPick={pickActor}
-            greenId={hintActive && greenHint?.kind === "actor" ? greenHint.id : null}
-            yellowIds={hintActive ? visitedActorIds : null}
-            sort={castSort}
-            onToggleSort={() => setCastSort(s => s === "popularity" ? "ord" : "popularity")}
-            themeColors={C} glass={glass} />
+          castOfCurrent && <>
+            {castOfCurrent.length > 0
+              ? <ActorPicker title={`Casting · ${currentMovie.title} · ${castOfCurrent.length}`} actors={castOfCurrent} onPick={pickActor}
+                  greenId={hintActive && greenHint?.kind === "actor" ? greenHint.id : null}
+                  yellowIds={hintActive ? visitedActorIds : null}
+                  sort={castSort}
+                  onToggleSort={() => setCastSort(s => s === "popularity" ? "ord" : "popularity")}
+                  themeColors={C} glass={glass} />
+              : castReloadEmpty && <div style={{ textAlign: "center", padding: "16px 0", color: C.inkMute, fontSize: 14 }}>Données manquantes</div>}
+            <div style={{ textAlign: "center", marginTop: 12, marginBottom: 4 }}>
+              <button onClick={reloadCast} style={{ background: "none", border: `1px solid ${C.hairline}`, borderRadius: 8, padding: "6px 16px", color: C.inkSoft, cursor: "pointer", fontSize: 13 }}>Recharger le casting</button>
+            </div>
+          </>
         ) : (
           loadingFilmo ? <Spinner label={`Filmographie de ${selectedActor.name}`} themeColors={C} /> :
-          filmoOfActor && <MoviePicker title={`Filmographie · ${selectedActor.name}`}
-            movies={filmoOfActor} targetWork={challenge.end} onPick={pickMovie}
-            greenWork={hintActive && greenHint?.kind === "movie" ? { id: greenHint.id, type: greenHint.workType } : null}
-            yellowKeys={hintActive ? visitedMovieKeys : null}
-            sort={filmoSort} onToggleSort={() => setFilmoSort(s => s === "popularity" ? "date" : "popularity")}
-            onClose={() => { setClicks(c => c + 1); setSelectedActor(null); setFilmoOfActor(null); }}
-            themeColors={C} glass={glass} />
+          filmoOfActor && <>
+            {filmoOfActor.length > 0
+              ? <MoviePicker title={`Filmographie · ${selectedActor.name} · ${filmoOfActor.length}`}
+                  movies={filmoOfActor} targetWork={challenge.end} onPick={pickMovie}
+                  greenWork={hintActive && greenHint?.kind === "movie" ? { id: greenHint.id, type: greenHint.workType } : null}
+                  yellowKeys={hintActive ? visitedMovieKeys : null}
+                  sort={filmoSort} onToggleSort={() => setFilmoSort(s => s === "popularity" ? "date" : "popularity")}
+                  onClose={() => { setClicks(c => c + 1); setSelectedActor(null); setFilmoOfActor(null); }}
+                  themeColors={C} glass={glass} />
+              : filmoReloadEmpty && <div style={{ textAlign: "center", padding: "16px 0", color: C.inkMute, fontSize: 14 }}>Données manquantes</div>}
+            <div style={{ textAlign: "center", marginTop: 12, marginBottom: 4 }}>
+              <button onClick={reloadFilmo} style={{ background: "none", border: `1px solid ${C.hairline}`, borderRadius: 8, padding: "6px 16px", color: C.inkSoft, cursor: "pointer", fontSize: 13 }}>Recharger la filmographie</button>
+            </div>
+          </>
         )}
       </div>
 
@@ -3561,18 +3567,17 @@ function VersusFiltersPanel({ versusPrefs, setVersusPrefs, disabled, themeColors
   function toggleGenre(id) {
     setVersusPrefs(p => {
       const n = Number(id);
-      const isInclude = (p.filterMode || "exclude") === "include";
-      const key = isInclude ? "includeGenres" : "excludeGenres";
-      const cur = (p[key] || []).map(Number);
+      const cur = (p.includeGenres || []).map(Number);
       const has = cur.includes(n);
-      return { ...p, [key]: has ? cur.filter(g => g !== n) : [...cur, n] };
+      return { ...p, filterMode: "include", includeGenres: has ? cur.filter(g => g !== n) : [...cur, n] };
     });
   }
-  function clearGenres() {
-    setVersusPrefs(p => {
-      const isInclude = (p.filterMode || "exclude") === "include";
-      return { ...p, [isInclude ? "includeGenres" : "excludeGenres"]: [] };
-    });
+  const allGenresChecked = allGenres.length === (versusPrefs.includeGenres || []).length;
+  function toggleAllGenres() {
+    setVersusPrefs(p => ({
+      ...p, filterMode: "include",
+      includeGenres: allGenresChecked ? [] : allGenres.map(Number),
+    }));
   }
   function toggleEra(key) {
     setVersusPrefs(p => {
@@ -3709,51 +3714,25 @@ function VersusFiltersPanel({ versusPrefs, setVersusPrefs, disabled, themeColors
       {/* Genres */}
       <div style={{ marginBottom: 18 }}>
         <div style={titleRowStyle}>
-          <div style={titleStyle}>Genres</div>
-          <div style={{ display: "flex", gap: 3, ...glass, padding: 2, borderRadius: 999 }}>
-            {[{ key: "include", label: "Inclure" }, { key: "exclude", label: "Exclure" }].map(({ key, label }) => {
-              const active = (versusPrefs.filterMode || "exclude") === key;
-              return (
-                <button key={key} onClick={() => setVersusPrefs(p => ({ ...p, filterMode: key }))} disabled={disabled}
-                  style={{ padding: "4px 10px", borderRadius: 999, border: "none",
-                    background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
-                    fontFamily: "inherit", fontSize: 9, fontWeight: 700,
-                    letterSpacing: 0.6, textTransform: "uppercase",
-                    cursor: disabled ? "not-allowed" : "pointer",
-                    opacity: disabled ? 0.6 : 1 }}>{label}</button>
-              );
-            })}
-          </div>
+          <div style={titleStyle}>Genres acceptés</div>
+          <button onClick={toggleAllGenres} disabled={disabled} style={linkBtnStyle}>
+            {allGenresChecked ? "Tout décocher" : "Tout cocher"}
+          </button>
         </div>
-        {(() => {
-          const isInclude = (versusPrefs.filterMode || "exclude") === "include";
-          const activeList = isInclude ? (versusPrefs.includeGenres || []) : (versusPrefs.excludeGenres || []);
-          const hasSelection = activeList.length > 0;
-          return (
-            <>
-              {hasSelection && (
-                <div style={{ marginBottom: 8, display: "flex", justifyContent: "flex-end" }}>
-                  <button onClick={clearGenres} disabled={disabled} style={linkBtnStyle}>Vider</button>
-                </div>
-              )}
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {allGenres.map(id => {
-                  const active = activeList.map(Number).includes(Number(id));
-                  return (
-                    <button key={id} onClick={() => toggleGenre(id)} disabled={disabled}
-                      style={{ padding: "6px 12px", borderRadius: 999,
-                        border: `1px solid ${active ? C.ink : C.hairline}`,
-                        background: active ? C.ink : C.cardBg, color: active ? C.bg : C.ink,
-                        fontFamily: "inherit", fontSize: 11, fontWeight: 600,
-                        cursor: disabled ? "not-allowed" : "pointer",
-                        opacity: disabled ? 0.6 : 1,
-                        textDecoration: (!isInclude && active) ? "line-through" : "none" }}>{GENRES[id]}</button>
-                  );
-                })}
-              </div>
-            </>
-          );
-        })()}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {allGenres.map(id => {
+            const active = (versusPrefs.includeGenres || []).map(Number).includes(Number(id));
+            return (
+              <button key={id} onClick={() => toggleGenre(id)} disabled={disabled}
+                style={{ padding: "6px 12px", borderRadius: 999,
+                  border: `1px solid ${active ? C.ink : C.hairline}`,
+                  background: active ? C.ink : C.cardBg, color: active ? C.bg : C.ink,
+                  fontFamily: "inherit", fontSize: 11, fontWeight: 600,
+                  cursor: disabled ? "not-allowed" : "pointer",
+                  opacity: disabled ? 0.6 : 1 }}>{GENRES[id]}</button>
+            );
+          })}
+        </div>
       </div>
 
       {/* Réinitialiser par défaut */}
