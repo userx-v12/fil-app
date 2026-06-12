@@ -28,14 +28,55 @@ Lis CLAUDE.md et SESSION_LOG.md. Dis-moi en 3 lignes où on en est et ce qu'on a
 
 ---
 
-## Session du 2026-06-12 — v5.13 à v5.15
+## Session du 2026-06-12 — v5.14 + v5.15
 
 ### Ce qu'on a fait
-- v5.13 : fix cache poison acteurs/casting, boutons rechargement forcé, compteurs dans titres, MAX_TRIES difficile 10→25
-- v5.14 : polish OptionsScreen (card glass, boutons compacts), genres sans toggle inclure/exclure → "Tout cocher/décocher", même changement dans VersusFiltersPanel, DEFAULT_PREFS migré en include avec tous genres sauf Animation+Documentaire
-- v5.15 : bouton "?" haut gauche ouvre modal "Comment jouer", suppression du lien dans le menu, recherche fuzzy (fuse.js) dans ActorPicker et MoviePicker via icône loupe, version affichée corrigée → v5.15
+
+**Backlog / nettoyage**
+- Supprimé "Casting : séparer visuellement Casting du toggle de tri" du backlog (non-problème, purement cosmétique sans valeur réelle)
+- Confirmé que `original_title` n'est pas en DB (table `works` ne stocke pas ce champ) → feature cross-langue mise en backlog comme migration séparée
+- Confirmé que `character_name` n'est pas en DB non plus → migration DB requise, mis en backlog
+
+**v5.14 — Polish OptionsScreen + refonte genres**
+- Les 4 sections filtres (Époques, Note minimale, Langues, Genres) enveloppées dans une card glass (`borderRadius: 16, padding: 16`) style VersusFiltersPanel
+- Boutons filtres réduits : `padding: "6px 12px"`, `fontSize: 11`, `letterSpacing: 2` (au lieu de 8/14, 12, 3)
+- Section Genres : suppression du toggle Inclure/Exclure, remplacé par bouton "Tout cocher"/"Tout décocher" (même pattern que Langues)
+- Même changement dans `VersusFiltersPanel`
+- `DEFAULT_PREFS` migré : `filterMode: "include"`, `includeGenres: [28,12,35,80,18,10751,14,36,27,10402,9648,10749,878,10770,53,10752,37]` (tous sauf Animation 16 et Documentaire 99), `excludeGenres: []`
+
+**v5.15 — Bouton ? + recherche fuzzy**
+- `TopRoundButton` : ajout d'une position `"left2"` (`left: max(62px, calc(50% - 240px + 62px))`)
+- Bouton "?" ajouté à `position="left"`, ouvre `InfoModal` via `setShowInfo(true)`
+- Bouton thème déplacé de `"left"` → `"left2"` (décalé de 46px à droite)
+- Prop `onOpenInfo` retirée du composant `Menu` et de son call site (plus utilisée)
+- Lien "Comment jouer ?" supprimé du JSX du `Menu`
+- `import Fuse from "fuse.js"` ajouté (`npm install fuse.js`)
+- `ActorPicker` : state `showSearch` + `searchQuery` + `searchRef`, icône loupe toggle l'input, fuzzy search sur `name` (threshold 0.4), "Voir plus" masqué pendant la recherche
+- `MoviePicker` : même pattern, fuzzy search sur `title`
+- Version affichée dans le menu corrigée : `v5.12` → `v5.15` (l.1794)
 
 ### Bugs corrigés
+Aucun bug cette session — uniquement des features.
+
+### État actuel du code
+- Version : v5.15 (committée et pushée sur `main`)
+- Fichiers modifiés : `src/App.jsx` uniquement + `package.json` / `package-lock.json` (fuse.js)
+- Tout fonctionne : OptionsScreen, VersusFiltersPanel, bouton ?, recherche fuzzy casting + filmo
+
+### Ce qui reste à faire (backlog v5.16+)
+1. Nom du personnage joué dans Casting — migration DB (`character_name` dans `credits` + relance import 944k lignes) — à faire quand décidé
+2. Gestion déconnexion adversaire (Supabase Presence channels)
+3. `original_title` dans `works` pour recherche cross-langue (ex: "Star Wars" ↔ titre localisé) — migration DB séparée
+4. Phase 6 : App iOS via Capacitor
+
+### Pièges à éviter
+- Ne PAS accepter les modifications automatiques de Claude Code sans plan validé au préalable
+- Ne PAS réécrire App.jsx en entier même si demandé
+- Les tableaux vides `[]` sont truthy en JS — toujours vérifier `.length > 0` avant de considérer un cache comme valide
+- Ne PAS oublier de passer `opponentHintsUsed` dans toutes les VersusPlayerCard (bug v5.12)
+- Le numéro de version affiché dans le menu (l.1794 de App.jsx) doit être mis à jour manuellement à chaque release
+- `filterMode` est maintenant toujours `"include"` dans toute l'app — ne PAS remettre le toggle Inclure/Exclure ni repasser en `"exclude"` par défaut
+- `TopRoundButton` a 3 positions : `"left"` (loupe ?), `"left2"` (thème), `"right"` (compte) — ne pas confondre
 
 ### Ce qu'on a fait
 - Audit et fix du bug "filmographie vide" (acteur sans films alors qu'il en a après refresh)
