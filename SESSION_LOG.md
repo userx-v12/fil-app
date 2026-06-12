@@ -28,7 +28,14 @@ Lis CLAUDE.md et SESSION_LOG.md. Dis-moi en 3 lignes où on en est et ce qu'on a
 
 ---
 
-## Session du 2026-06-12 — Bugs cache + boutons reload + compteurs
+## Session du 2026-06-12 — v5.13 à v5.15
+
+### Ce qu'on a fait
+- v5.13 : fix cache poison acteurs/casting, boutons rechargement forcé, compteurs dans titres, MAX_TRIES difficile 10→25
+- v5.14 : polish OptionsScreen (card glass, boutons compacts), genres sans toggle inclure/exclure → "Tout cocher/décocher", même changement dans VersusFiltersPanel, DEFAULT_PREFS migré en include avec tous genres sauf Animation+Documentaire
+- v5.15 : bouton "?" haut gauche ouvre modal "Comment jouer", suppression du lien dans le menu, recherche fuzzy (fuse.js) dans ActorPicker et MoviePicker via icône loupe, version affichée corrigée → v5.15
+
+### Bugs corrigés
 
 ### Ce qu'on a fait
 - Audit et fix du bug "filmographie vide" (acteur sans films alors qu'il en a après refresh)
@@ -63,13 +70,14 @@ Lis CLAUDE.md et SESSION_LOG.md. Dis-moi en 3 lignes où on en est et ce qu'on a
 - `title={`Filmographie · ${selectedActor.name} · ${filmoOfActor.length}`}`
 
 ### État actuel du code
-- Version : v5.13 (non encore committée/pushée)
+- Version : v5.15 (committée et pushée)
 - Tous les changements dans `src/App.jsx` uniquement
+- Dépendance ajoutée : `fuse.js` (fuzzy search)
 
-### Ce qui reste à faire (backlog v5.14+)
-1. Nom du personnage joué dans Casting — nécessite migration DB (colonne `character_name` dans `credits` + relance import 944k lignes) — à faire quand décidé
-2. Polish OptionsScreen avec VersusFiltersPanel
-3. Gestion déconnexion adversaire (Supabase Presence channels)
+### Ce qui reste à faire (backlog v5.16+)
+1. Nom du personnage joué dans Casting — migration DB (`character_name` dans `credits` + relance import 944k lignes) — à faire quand décidé
+2. Gestion déconnexion adversaire (Supabase Presence channels)
+3. `original_title` dans `works` pour recherche cross-langue (Star Wars ↔ La Guerre des étoiles) — migration DB séparée
 4. Phase 6 : App iOS via Capacitor
 
 ### Pièges à éviter
@@ -77,6 +85,7 @@ Lis CLAUDE.md et SESSION_LOG.md. Dis-moi en 3 lignes où on en est et ce qu'on a
 - Ne PAS réécrire App.jsx en entier même si demandé
 - Les tableaux vides `[]` sont truthy en JS — toujours vérifier `.length > 0` avant de considérer un cache comme valide
 - Ne PAS oublier de passer `opponentHintsUsed` dans toutes les VersusPlayerCard (bug v5.12)
+- Le numéro de version affiché dans le menu doit être mis à jour manuellement à chaque release (l.1794)
 
 ---
 
