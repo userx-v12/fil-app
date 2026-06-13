@@ -4285,7 +4285,9 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
   // États pour la proposition de changement
   const [refreshing, setRefreshing] = useState(null); // null | "start" | "end" | "both"
   const [proposalAction, setProposalAction] = useState(null); // null | "accept" | "refuse"
+  const [countdown, setCountdown] = useState(null); // null | 3 | 2 | 1 | 0
   const startedRef = useRef(false);
+  const matchToStartRef = useRef(null);
 
   const myToken = useMemo(() => getPlayerToken(), []);
   const me = players.find(p => p.player_token === myToken);
@@ -4362,8 +4364,17 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
     if (match.status !== "playing") return;
     if (startedRef.current) return;
     startedRef.current = true;
-    onStartGame(match);
-  }, [match?.status, onStartGame]);
+    matchToStartRef.current = match;
+    setCountdown(3);
+  }, [match?.status]);
+
+  // Décompte avant le lancement
+  useEffect(() => {
+    if (countdown === null) return;
+    if (countdown === 0) { onStartGame(matchToStartRef.current); return; }
+    const t = setTimeout(() => setCountdown(c => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [countdown, onStartGame]);
 
   async function handleStart() {
     if (!match || starting) return;
@@ -4710,6 +4721,19 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
           {iAmCreator
             ? "Partage le code ou le lien à ton ami."
             : <>Partie créée. Attendons le démarrage<AnimatedDots /></>}
+        </div>
+      )}
+
+      {countdown !== null && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 200,
+          background: C.bg, display: "flex", flexDirection: "column",
+          alignItems: "center", justifyContent: "center" }}>
+          <div style={{ fontSize: countdown === 0 ? 96 : 144, fontWeight: 900,
+            color: countdown === 0 ? C.green : C.ink, letterSpacing: -6,
+            lineHeight: 1, fontVariantNumeric: "tabular-nums",
+            transition: "color 0.15s" }}>
+            {countdown === 0 ? "GO !" : countdown}
+          </div>
         </div>
       )}
     </div>
