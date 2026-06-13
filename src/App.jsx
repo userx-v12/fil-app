@@ -127,9 +127,14 @@ const LS_INFO_SEEN = "fil-info-seen";
 const LS_USER_PRESET = "fil-user-preset";  // Snapshot des prefs sauvegardé par le user
 const LS_PLAYER_TOKEN  = "fil-player-token"; // Identifiant unique du joueur (anonyme, persistant)
 const LS_PLAYER_NAME   = "fil-player-name";  // Pseudo réutilisé entre les parties Versus
-const LS_BEST_STEPS    = "fil-best-steps";   // Meilleur score solo (min étapes)
-const LS_VERSUS_WINS   = "fil-versus-wins";
-const LS_VERSUS_LOSSES = "fil-versus-losses";
+const LS_BEST_STEPS     = "fil-best-steps";   // Meilleur score solo (min étapes)
+const LS_VERSUS_WINS    = "fil-versus-wins";
+const LS_VERSUS_LOSSES  = "fil-versus-losses";
+const LS_SOLO_EASY      = "fil-solo-easy";
+const LS_SOLO_MEDIUM    = "fil-solo-medium";
+const LS_SOLO_HARD      = "fil-solo-hard";
+const LS_SOLO_OPTIMAL   = "fil-solo-optimal";
+const LS_VERSUS_OPTIMAL = "fil-versus-optimal";
 
 function loadPrefs() {
   try {
@@ -160,6 +165,12 @@ function loadVersusWins()   { try { return parseInt(localStorage.getItem(LS_VERS
 function loadVersusLosses() { try { return parseInt(localStorage.getItem(LS_VERSUS_LOSSES) || "0", 10); } catch { return 0; } }
 function incrementVersusWins()   { try { const c = loadVersusWins()   + 1; localStorage.setItem(LS_VERSUS_WINS,   String(c)); } catch {} }
 function incrementVersusLosses() { try { const c = loadVersusLosses() + 1; localStorage.setItem(LS_VERSUS_LOSSES, String(c)); } catch {} }
+function loadSoloDiff(d)  { try { const k = d === "easy" ? LS_SOLO_EASY : d === "medium" ? LS_SOLO_MEDIUM : LS_SOLO_HARD; return parseInt(localStorage.getItem(k) || "0", 10); } catch { return 0; } }
+function incSoloDiff(d)   { try { const k = d === "easy" ? LS_SOLO_EASY : d === "medium" ? LS_SOLO_MEDIUM : LS_SOLO_HARD; localStorage.setItem(k, String(parseInt(localStorage.getItem(k) || "0", 10) + 1)); } catch {} }
+function loadSoloOptimal()    { try { return parseInt(localStorage.getItem(LS_SOLO_OPTIMAL)   || "0", 10); } catch { return 0; } }
+function loadVersusOptimal()  { try { return parseInt(localStorage.getItem(LS_VERSUS_OPTIMAL) || "0", 10); } catch { return 0; } }
+function incSoloOptimal()     { try { localStorage.setItem(LS_SOLO_OPTIMAL,   String(loadSoloOptimal()   + 1)); } catch {} }
+function incVersusOptimal()   { try { localStorage.setItem(LS_VERSUS_OPTIMAL, String(loadVersusOptimal() + 1)); } catch {} }
 
 function saveUserPreset(prefs) {
   try { localStorage.setItem(LS_USER_PRESET, JSON.stringify(prefs)); return true; }
@@ -2286,7 +2297,14 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
           finalSteps, finalTimeMs, abandoned: false, hintsUsed,
         }).catch(() => {});
       } else {
-        saveBestSteps(Math.max(0, Math.floor((path.length - 1) / 2)));
+        const finalSteps = Math.max(0, Math.floor((path.length - 1) / 2));
+        saveBestSteps(finalSteps);
+        if (challenge.difficultyUsed && challenge.difficultyUsed !== "custom") {
+          incSoloDiff(challenge.difficultyUsed);
+        }
+        const optSteps = challenge.optimal?.length > 0
+          ? Math.max(0, Math.floor((challenge.optimal.length - 1) / 2)) : null;
+        if (optSteps !== null && finalSteps <= optSteps) incSoloOptimal();
       }
     }
   }, [isAtEnd, finished, onFinished, isVersus, versusContext, path.length, startTime, hintsUsed]);
@@ -3245,6 +3263,7 @@ function VersusEndScreen({
     ));
     if (iWon) incrementVersusWins();
     else if (iLost) incrementVersusLosses();
+    if (!myAbandoned && optimalSteps !== null && mySteps <= optimalSteps) incVersusOptimal();
   }, [bothDone]);
 
   // Hydrate le chemin de l'adversaire quand il a fini
@@ -4914,9 +4933,14 @@ function AccountScreen({ onBack, themeColors, glass, glassDark, gamesPlayed }) {
   const [nameInput, setNameInput] = useState("");
   const inputRef = useRef(null);
 
-  const bestSteps    = loadBestSteps();
-  const versusWins   = loadVersusWins();
-  const versusLosses = loadVersusLosses();
+  const bestSteps      = loadBestSteps();
+  const soloEasy       = loadSoloDiff("easy");
+  const soloMedium     = loadSoloDiff("medium");
+  const soloHard       = loadSoloDiff("hard");
+  const soloOptimal    = loadSoloOptimal();
+  const versusWins     = loadVersusWins();
+  const versusLosses   = loadVersusLosses();
+  const versusOptimal  = loadVersusOptimal();
 
   function startEdit() {
     setNameInput(playerName);
@@ -4984,9 +5008,25 @@ function AccountScreen({ onBack, themeColors, glass, glassDark, gamesPlayed }) {
           <span style={statLabel}>Parties jouées</span>
           <span style={statValue}>{gamesPlayed}</span>
         </div>
-        <div style={{ ...statRow, borderBottom: "none" }}>
+        <div style={{ ...statRow, paddingLeft: 12 }}>
+          <span style={{ ...statLabel, fontSize: 12, color: C.inkMute }}>Facile</span>
+          <span style={{ ...statValue, fontSize: 14 }}>{soloEasy}</span>
+        </div>
+        <div style={{ ...statRow, paddingLeft: 12 }}>
+          <span style={{ ...statLabel, fontSize: 12, color: C.inkMute }}>Moyen</span>
+          <span style={{ ...statValue, fontSize: 14 }}>{soloMedium}</span>
+        </div>
+        <div style={{ ...statRow, paddingLeft: 12 }}>
+          <span style={{ ...statLabel, fontSize: 12, color: C.inkMute }}>Difficile</span>
+          <span style={{ ...statValue, fontSize: 14 }}>{soloHard}</span>
+        </div>
+        <div style={statRow}>
           <span style={statLabel}>Meilleur score</span>
           <span style={statValue}>{bestSteps ? `${bestSteps} étape${bestSteps > 1 ? "s" : ""}` : "—"}</span>
+        </div>
+        <div style={{ ...statRow, borderBottom: "none" }}>
+          <span style={statLabel}>Chemin optimal</span>
+          <span style={statValue}>{soloOptimal} fois</span>
         </div>
       </div>
 
@@ -4997,9 +5037,13 @@ function AccountScreen({ onBack, themeColors, glass, glassDark, gamesPlayed }) {
           <span style={statLabel}>Victoires</span>
           <span style={{ ...statValue, color: C.green }}>{versusWins}</span>
         </div>
-        <div style={{ ...statRow, borderBottom: "none" }}>
+        <div style={statRow}>
           <span style={statLabel}>Défaites</span>
           <span style={{ ...statValue, color: C.amber }}>{versusLosses}</span>
+        </div>
+        <div style={{ ...statRow, borderBottom: "none" }}>
+          <span style={statLabel}>Chemin optimal</span>
+          <span style={statValue}>{versusOptimal} fois</span>
         </div>
       </div>
 
