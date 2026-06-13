@@ -1800,7 +1800,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.16</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.17</div>
     </div>
   );
 }
@@ -4909,7 +4909,7 @@ function PlayerRow({ slot, name, isMe, themeColors }) {
 
 function AccountScreen({ onBack, themeColors, glass, glassDark, gamesPlayed }) {
   const C = themeColors;
-  const [playerName, setPlayerName] = useState(loadPlayerName);
+  const [playerName, setPlayerName] = useState(getStoredPlayerName);
   const [editing, setEditing] = useState(false);
   const [nameInput, setNameInput] = useState("");
   const inputRef = useRef(null);
