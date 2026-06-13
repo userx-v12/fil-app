@@ -1,24 +1,15 @@
-const CACHE = "fil-v1";
+// Service worker minimal — requis pour PWA installable, pas de cache applicatif
+// (le jeu est 100% online, on ne met rien en cache pour éviter les données périmées)
 
-self.addEventListener("install", (e) => {
-  e.waitUntil(
-    caches.open(CACHE).then((c) => c.addAll(["/", "/index.html"]))
-  );
-  self.skipWaiting();
-});
+self.addEventListener("install", () => self.skipWaiting());
 
 self.addEventListener("activate", (e) => {
+  // Supprimer tous les anciens caches si jamais il y en a
   e.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))
-    )
+    caches.keys()
+      .then((keys) => Promise.all(keys.map((k) => caches.delete(k))))
+      .then(() => self.clients.claim())
   );
-  self.clients.claim();
 });
 
-self.addEventListener("fetch", (e) => {
-  if (e.request.method !== "GET") return;
-  e.respondWith(
-    caches.match(e.request).then((cached) => cached || fetch(e.request))
-  );
-});
+// Pas de fetch handler — on laisse passer toutes les requêtes normalement
