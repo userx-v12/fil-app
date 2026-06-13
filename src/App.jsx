@@ -1089,6 +1089,8 @@ function TopRoundButton({ position, onClick, children, title, themeColors, zInde
     ? { left: "max(16px, calc(50% - 240px + 16px))" }
     : position === "left2"
     ? { left: "max(62px, calc(50% - 240px + 62px))" }
+    : position === "center"
+    ? { left: "calc(50% - 19px)" }
     : { right: "max(16px, calc(50% - 240px + 16px))" };
   return (
     <button onClick={onClick} title={title}
@@ -1282,24 +1284,21 @@ export default function App() {
   const [versusContext, setVersusContext] = useState(null); // Contexte du jeu Versus { matchId, code, myPlayerId, mySlot, myName, opponentName, opponentPlayerId }
   const [versusPrefs, setVersusPrefs] = useState(() => ({ ...DEFAULT_PREFS })); // Prefs Versus indépendantes des prefs globales, partagées entre Create et Lobby
   const [installPrompt, setInstallPrompt] = useState(null);  // Android : event beforeinstallprompt
-  const [showInstallBanner, setShowInstallBanner] = useState(false);
-  const installDismissedKey = "fil-install-dismissed";
+  const [installType, setInstallType] = useState(null);      // null | "android" | "ios"
+  const [showInstallPopup, setShowInstallPopup] = useState(false);
 
   // PWA : capture le prompt Android, détecte iOS
   useEffect(() => {
     const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
     const isInStandalone = window.navigator.standalone === true;
-    const dismissed = localStorage.getItem(installDismissedKey);
-    if (dismissed) return;
+    if (isInStandalone) return;
 
-    if (isIos && !isInStandalone) {
-      setTimeout(() => setShowInstallBanner("ios"), 3000);
-      return;
-    }
+    if (isIos) { setInstallType("ios"); return; }
+
     const handler = (e) => {
       e.preventDefault();
       setInstallPrompt(e);
-      setTimeout(() => setShowInstallBanner("android"), 3000);
+      setInstallType("android");
     };
     window.addEventListener("beforeinstallprompt", handler);
     return () => window.removeEventListener("beforeinstallprompt", handler);
@@ -1310,13 +1309,10 @@ export default function App() {
       installPrompt.prompt();
       installPrompt.userChoice.then(() => {
         setInstallPrompt(null);
-        setShowInstallBanner(false);
+        setInstallType(null);
+        setShowInstallPopup(false);
       });
     }
-  }
-  function dismissInstallBanner() {
-    localStorage.setItem(installDismissedKey, "1");
-    setShowInstallBanner(false);
   }
 
   useEffect(() => { savePrefs(prefs); }, [prefs]);
@@ -1699,6 +1695,14 @@ export default function App() {
           <TopRoundButton position="left2" onClick={toggleTheme} title={theme === "light" ? "Mode sombre" : "Mode clair"} themeColors={C}>
             <ThemeIcon isLight={theme === "light"} color={C.ink} />
           </TopRoundButton>
+          {installType && screen === "menu" && (
+            <TopRoundButton position="center" onClick={() => setShowInstallPopup(p => !p)} title="Ajouter à l'écran d'accueil" themeColors={C}>
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={C.ink} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 2v13M8 11l4 4 4-4"/>
+                <path d="M20 16v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2"/>
+              </svg>
+            </TopRoundButton>
+          )}
           <TopRoundButton position="right" onClick={() => setScreen("account")} title="Compte" themeColors={C}>
             <AccountIcon color={C.ink} />
           </TopRoundButton>
@@ -1768,38 +1772,37 @@ export default function App() {
       {screen === "account" && <AccountScreen onBack={() => setScreen("menu")} themeColors={C} glass={glass} glassDark={glassDark}
                                   gamesPlayed={gamesPlayed} />}
 
-      {/* Bannière PWA "Ajouter à l'écran d'accueil" */}
-      {showInstallBanner && (
-        <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 300,
-          padding: "12px 16px 20px", background: C.bg,
-          borderTop: `1px solid ${C.hairline}`, display: "flex", gap: 10, alignItems: "center" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
-            <img src="/icon-192.png" alt="" style={{ width: 40, height: 40, borderRadius: 10, flexShrink: 0 }} />
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: C.ink, letterSpacing: -0.3 }}>Ajouter Fil</div>
-              {showInstallBanner === "ios"
-                ? <div style={{ fontSize: 11, color: C.inkSoft, marginTop: 1 }}>Appuie sur <strong>⬆</strong> puis "Sur l'écran d'accueil"</div>
-                : <div style={{ fontSize: 11, color: C.inkSoft, marginTop: 1 }}>Installe l'app pour y accéder depuis ton écran d'accueil</div>
-              }
+      {/* Popup PWA "Ajouter à l'écran d'accueil" */}
+      {showInstallPopup && installType && (
+        <>
+          <div onClick={() => setShowInstallPopup(false)}
+            style={{ position: "fixed", inset: 0, zIndex: 290 }} />
+          <div style={{ position: "fixed", top: 62, left: "50%", transform: "translateX(-50%)",
+            zIndex: 300, width: "min(320px, calc(100vw - 32px)",
+            ...glass, borderRadius: 18, padding: 20, boxShadow: "0 8px 32px rgba(0,0,0,0.25)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14 }}>
+              <img src="/icon-192.png" alt="" style={{ width: 48, height: 48, borderRadius: 12, flexShrink: 0 }} />
+              <div>
+                <div style={{ fontSize: 15, fontWeight: 800, color: C.ink, letterSpacing: -0.4 }}>Ajouter Fil</div>
+                <div style={{ fontSize: 12, color: C.inkSoft, marginTop: 2 }}>Accès rapide depuis ton écran d'accueil</div>
+              </div>
             </div>
-          </div>
-          <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-            {showInstallBanner === "android" && (
+            {installType === "ios" ? (
+              <div style={{ fontSize: 13, color: C.ink, lineHeight: 1.6,
+                background: C.bg, borderRadius: 10, padding: "10px 14px",
+                border: `1px solid ${C.hairline}` }}>
+                Appuie sur <strong>⬆</strong> en bas de Safari,<br/>puis <strong>"Sur l'écran d'accueil"</strong>
+              </div>
+            ) : (
               <button onClick={handleInstallClick}
-                style={{ ...glassDark, borderRadius: 999, padding: "8px 14px", border: "none",
-                  fontFamily: "inherit", fontSize: 11, letterSpacing: 1, textTransform: "uppercase",
+                style={{ ...glassDark, width: "100%", borderRadius: 12, padding: "12px 0", border: "none",
+                  fontFamily: "inherit", fontSize: 12, letterSpacing: 1.2, textTransform: "uppercase",
                   fontWeight: 700, cursor: "pointer", color: C.glassDarkInk }}>
-                Installer
+                Installer l'app
               </button>
             )}
-            <button onClick={dismissInstallBanner}
-              style={{ background: "transparent", border: `1px solid ${C.hairline}`, borderRadius: 999,
-                padding: "8px 12px", fontFamily: "inherit", fontSize: 11, letterSpacing: 1,
-                textTransform: "uppercase", fontWeight: 700, color: C.inkMute, cursor: "pointer" }}>
-              ✕
-            </button>
           </div>
-        </div>
+        </>
       )}
     </Background>
   );
