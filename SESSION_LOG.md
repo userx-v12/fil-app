@@ -28,41 +28,58 @@ Lis CLAUDE.md et SESSION_LOG.md. Dis-moi en 3 lignes où on en est et ce qu'on a
 
 ---
 
-## Session du 2026-06-13 — v5.18 (suite)
+## Session du 2026-06-13 — v5.18
 
 ### Ce qu'on a fait
 
-**PWA — Raccourci écran d'accueil**
+**PWA — Raccourci écran d'accueil** (session précédente, contexte compressé)
 - `public/manifest.json` : name "Fil — Relie les films", short_name "Fil", display standalone, icons 192/512/maskable
-- `public/sw.js` : service worker minimal (install/activate/fetch), cache "/" et "/index.html"
+- `public/sw.js` : service worker (install/activate/fetch)
 - `public/icon.svg` : 512x512, fond `#0f1729`, foudre `#863bff` (`translate(64,72) scale(8)`)
 - `public/icon-192.png`, `public/icon-512.png`, `public/apple-touch-icon.png` : générés via `@resvg/resvg-js` + `scripts/generate-icons.mjs`
 - `index.html` : lang="fr", manifest, theme-color, apple-touch-icon, apple-mobile-web-app-*, enregistrement SW
 - Bouton install centré (`TopRoundButton position="center"`) dans le menu — toujours visible (pas conditionné à `installType`)
-- Popup d'install : header avec icon-192.png + titre. Contenu adaptatif :
-  - Android (beforeinstallprompt capturé) → bouton "Installer l'app" déclenche le prompt natif
-  - iOS → instruction "⬆ en bas de Safari → Sur l'écran d'accueil"
-  - Autre/desktop → instruction Chrome ⋮
+- Popup d'install adaptative :
+  - Android (`installType === "android"`) → bouton "Installer l'app" déclenche le prompt natif via `deferredPromptRef`
+  - iOS (`installType === "ios"`) → instruction "⬆ en bas de Safari → Sur l'écran d'accueil"
+  - Autre/desktop (`installType === null`) → instruction Chrome ⋮
+- Commits dans cet ordre : `b0f3186` (bouton toujours visible), `7b2322c` (popup adaptative + docs), `9c3caac` (fix SW Safari)
+
+**Fix popup install** (cette session)
+- Ancienne version : popup conditionnée à `showInstallPopup && installType` → ne s'affichait pas si `installType` était null
+- Nouvelle version : popup conditionnée à `showInstallPopup` uniquement — s'affiche toujours, contenu adapté selon `installType`
+
+**Fix critique SW Safari**
+- SW original avait un fetch handler cache-first sur TOUS les GET → interceptait les appels Supabase, les mettait en cache et servait des données périmées
+- Chrome tolérait ça, Safari cassait complètement l'app (page blanche ou données bloquées)
+- Fix : SW sans fetch handler — il existe juste pour satisfaire le prérequis PWA (manifest + SW = installable), ne touche à aucune requête
 
 ### Bugs corrigés
-Aucun bug — uniquement feature PWA.
+
+**Bug critique — Fil cassé sur Safari (iOS + macOS)**
+- Symptôme : app ne fonctionnait plus sur Safari (mobile et desktop), seulement sur Chrome
+- Cause : `public/sw.js` interceptait tous les GET requests avec `e.respondWith(caches.match(...))` — les appels Supabase (`xjfxezwtwjhudrbtbpnv.supabase.co`) étaient cachés au premier appel, puis servis depuis le cache au lieu du réseau
+- Fix : suppression totale du `fetch` handler dans `public/sw.js`. SW réduit à install (skipWaiting) + activate (purge des anciens caches + claim). Commit `9c3caac`
 
 ### État actuel du code
-- Version : v5.18 (dernier push `b0f3186` + popup fix en cours)
-- Fichiers modifiés : `src/App.jsx`, `index.html`, `public/manifest.json`, `public/sw.js`, `public/icon.svg`, `public/icon-*.png`, `scripts/generate-icons.mjs`
+- Version : v5.18, commit `9c3caac`, pushé sur `main`
+- Fichiers PWA : `public/sw.js`, `public/manifest.json`, `public/icon.svg`, `public/icon-192.png`, `public/icon-512.png`, `public/apple-touch-icon.png`, `scripts/generate-icons.mjs`
+- `index.html` : manifest + SW enregistrement
+- `src/App.jsx` : bouton install + popup + states `installType` / `showInstallPopup` / `deferredPromptRef`
+- Tout fonctionne : Safari iOS, Safari macOS, Chrome, install PWA validé par Mathieu
 
 ### Ce qui reste à faire (backlog v5.19+)
-1. Supabase Auth — comptes réels, liste d'amis, stats cross-device
+1. Supabase Auth — comptes réels, liste d'amis, stats cross-device (priorité haute, Mathieu veut ça)
 2. Nom du personnage joué dans Casting — migration DB (`character_name` dans `credits`)
 3. `original_title` dans `works` pour recherche cross-langue
 4. Phase 6 : App iOS via Capacitor
 
 ### Pièges à éviter
-- Le bouton install s'affiche TOUJOURS sur le menu (pas de condition `installType &&`) — ne pas remettre ce gate
-- La popup s'affiche selon 3 cas : android (prompt natif) / ios (instruction Safari) / autre (instruction Chrome)
-- `installType` est null par défaut, devient "android" si `beforeinstallprompt` se déclenche, "ios" si userAgent iOS détecté
-- `public/icon-*.png` sont générés via `node scripts/generate-icons.mjs` (requiert `@resvg/resvg-js`)
-- SW en cache : si on change l'app, incrémenter le nom du cache dans `sw.js` (actuellement `"fil-v1"`) pour forcer la mise à jour
+- **NE JAMAIS remettre un fetch handler dans `sw.js`** — même "network-first", même "navigation only" — le jeu est 100% online, le SW ne doit rien cacher. La dernière fois ça a cassé Safari complètement.
+- Le bouton install s'affiche TOUJOURS sur le menu (pas de condition `installType &&` sur le bouton ni sur la popup) — ne pas remettre ce gate
+- `installType` est null par défaut, devient "android" si `beforeinstallprompt` se déclenche, "ios" si userAgent iOS détecté au mount
+- `public/icon-*.png` sont générés via `node scripts/generate-icons.mjs` (requiert `@resvg/resvg-js` en devDependency)
+- Si on modifie l'icône SVG, relancer `node scripts/generate-icons.mjs` et committer les PNG mis à jour
 
 ---
 
