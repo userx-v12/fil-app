@@ -28,6 +28,140 @@ Lis CLAUDE.md et SESSION_LOG.md. Dis-moi en 3 lignes où on en est et ce qu'on a
 
 ---
 
+## Session du 2026-06-13 — v5.18 (suite)
+
+### Ce qu'on a fait
+
+**PWA — Raccourci écran d'accueil**
+- `public/manifest.json` : name "Fil — Relie les films", short_name "Fil", display standalone, icons 192/512/maskable
+- `public/sw.js` : service worker minimal (install/activate/fetch), cache "/" et "/index.html"
+- `public/icon.svg` : 512x512, fond `#0f1729`, foudre `#863bff` (`translate(64,72) scale(8)`)
+- `public/icon-192.png`, `public/icon-512.png`, `public/apple-touch-icon.png` : générés via `@resvg/resvg-js` + `scripts/generate-icons.mjs`
+- `index.html` : lang="fr", manifest, theme-color, apple-touch-icon, apple-mobile-web-app-*, enregistrement SW
+- Bouton install centré (`TopRoundButton position="center"`) dans le menu — toujours visible (pas conditionné à `installType`)
+- Popup d'install : header avec icon-192.png + titre. Contenu adaptatif :
+  - Android (beforeinstallprompt capturé) → bouton "Installer l'app" déclenche le prompt natif
+  - iOS → instruction "⬆ en bas de Safari → Sur l'écran d'accueil"
+  - Autre/desktop → instruction Chrome ⋮
+
+### Bugs corrigés
+Aucun bug — uniquement feature PWA.
+
+### État actuel du code
+- Version : v5.18 (dernier push `b0f3186` + popup fix en cours)
+- Fichiers modifiés : `src/App.jsx`, `index.html`, `public/manifest.json`, `public/sw.js`, `public/icon.svg`, `public/icon-*.png`, `scripts/generate-icons.mjs`
+
+### Ce qui reste à faire (backlog v5.19+)
+1. Supabase Auth — comptes réels, liste d'amis, stats cross-device
+2. Nom du personnage joué dans Casting — migration DB (`character_name` dans `credits`)
+3. `original_title` dans `works` pour recherche cross-langue
+4. Phase 6 : App iOS via Capacitor
+
+### Pièges à éviter
+- Le bouton install s'affiche TOUJOURS sur le menu (pas de condition `installType &&`) — ne pas remettre ce gate
+- La popup s'affiche selon 3 cas : android (prompt natif) / ios (instruction Safari) / autre (instruction Chrome)
+- `installType` est null par défaut, devient "android" si `beforeinstallprompt` se déclenche, "ios" si userAgent iOS détecté
+- `public/icon-*.png` sont générés via `node scripts/generate-icons.mjs` (requiert `@resvg/resvg-js`)
+- SW en cache : si on change l'app, incrémenter le nom du cache dans `sw.js` (actuellement `"fil-v1"`) pour forcer la mise à jour
+
+---
+
+## Session du 2026-06-13 — v5.16
+
+### Ce qu'on a fait
+
+**Gestion déconnexion adversaire en Versus**
+- Presence channel Supabase par match (`presence:game-${matchId}`) : chaque joueur track `{ playerId }` à l'entrée en jeu
+- Détection instantanée via event `leave` → state `opponentDisconnectedAt` (timestamp)
+- Reconnexion silencieuse via event `join` → reset `opponentDisconnectedAt` à null
+- Grace period 30s : l'useEffect de victoire tourne via le timer `elapsed` existant (100ms), pas de setInterval supplémentaire
+- Victoire : `finishPlayer(myPlayerId, { abandoned: false })` + `finishPlayer(opponentPlayerId, { abandoned: true })` → déclenche le flow Realtime existant vers VersusEndScreen
+- Chrono préservé sur reconnexion : `startTime` stocké en localStorage (`vs_start:{matchId}:{myPlayerId}`), restauré au remount
+- Bannière ambre en jeu : "X s'est déconnecté — victoire dans Ns" avec countdown (se met à jour via `elapsed`)
+
+**Synchronisation affiches dans le lobby Versus**
+- `defiWorks` useEffect gated sur `bothReady` : les affiches ne chargent que quand les deux joueurs sont présents → découverte simultanée
+- Quand `!bothReady`, la card "Le défi" affiche un placeholder texte au lieu d'affiches
+- Quand `pendingChange` actif, la section défi affiche `pendingChange.new_start/new_end` pour les DEUX joueurs (au lieu de `defiWorks` côté proposeur) → plus d'asymétrie
+
+### Bugs corrigés
+Aucun bug — uniquement des features.
+
+### État actuel du code
+- Version : v5.16 (committée et pushée sur `main`, commit `6744780`)
+- Fichiers modifiés : `src/App.jsx` uniquement
+- Tout testé et validé par Mathieu
+
+### Ce qui reste à faire (backlog v5.17+)
+1. Nom du personnage joué dans Casting — migration DB (`character_name` dans `credits`) — à faire quand décidé
+2. `original_title` dans `works` pour recherche cross-langue — migration DB séparée
+3. Phase 6 : App iOS via Capacitor
+4. Countdown avant lancement (les deux joueurs commencent vraiment en même temps) — explicitement reporté
+
+### Pièges à éviter
+- Ne PAS accepter les modifications automatiques de Claude Code sans plan validé au préalable
+- Ne PAS réécrire App.jsx en entier même si demandé
+- Les tableaux vides `[]` sont truthy en JS — toujours vérifier `.length > 0` avant de considérer un cache comme valide
+- Ne PAS oublier de passer `opponentHintsUsed` dans toutes les VersusPlayerCard (bug v5.12)
+- Le numéro de version affiché dans le menu (l.1794 de App.jsx) doit être mis à jour manuellement à chaque release — ne pas oublier avant de push
+- `filterMode` est toujours `"include"` dans toute l'app — ne PAS remettre le toggle ni passer en `"exclude"` par défaut
+- `TopRoundButton` a 3 positions : `"left"` (bouton ?), `"left2"` (thème), `"right"` (compte)
+- `versusContext.opponentPlayerId` peut être null si l'adversaire n'a pas encore rejoint — toujours vérifier avant d'appeler `finishPlayer` sur lui
+- Le Presence channel utilise `String(playerId)` comme clé — les UUIDs sont des strings, ne pas comparer sans cast
+- Les affiches du lobby ne chargent qu'une fois `bothReady === true` — c'est voulu, ne pas enlever ce gate
+
+---
+
+## Session du 2026-06-13 — v5.17 (suite)
+
+### Ce qu'on a fait
+
+**Stats compte — abandons + indices**
+- 3 nouvelles clés localStorage : `fil-solo-abandons`, `fil-solo-hints`, `fil-versus-hints`
+- `incSoloAbandons()` + `addSoloHints(hintsUsed)` dans `handleAbandonClick` (solo uniquement)
+- `addSoloHints(hintsUsed)` dans le useEffect `isAtEnd` (victoire solo)
+- `addVersusHints(myHintsUsed)` dans le useEffect `statsTrackedRef` de VersusEndScreen
+- AccountScreen : "Abandons" (ambre) + "Indices utilisés" dans solo ; "Indices utilisés" dans Versus
+
+**Countdown avant lancement Versus**
+- State `countdown` (null → 3 → 2 → 1 → 0) + `matchToStartRef` dans `VersusLobbyScreen`
+- useEffect status "playing" déclenche `setCountdown(3)` au lieu de `onStartGame` directement
+- useEffect décompte via `setTimeout` 1s, appelle `onStartGame` quand countdown atteint 0
+- Overlay `position: fixed, zIndex: 200` : gros chiffre centré (144px), "GO !" en vert (96px)
+
+**Écran Compte — Pseudo modifiable + stats locales**
+- Bug corrigé au passage : `loadPlayerName` → `getStoredPlayerName` (nom réel de la fonction)
+- Pseudo Versus : affiché + bouton "Modifier" → input inline, Entrée/Échap/bouton Enregistrer
+- Stats Solo : parties jouées + détail par difficulté (Facile/Moyen/Difficile, indentés) + meilleur score + chemin optimal (nb de fois)
+- Stats Versus : Victoires (vert) + Défaites (ambre) + chemin optimal (nb de fois)
+- Note bas de page : "Stats enregistrées sur cet appareil · Comptes bientôt disponibles"
+- Nouveaux localStorage : `fil-solo-easy/medium/hard`, `fil-solo-optimal`, `fil-versus-optimal`
+- Tracking solo dans `isAtEnd` useEffect du composant Game (difficulté + optimal)
+- Tracking Versus dans `VersusEndScreen` statsTracked useEffect (optimal + hints)
+- Parties "custom" non comptées dans les catégories difficulté
+
+### Bugs corrigés
+- `loadPlayerName` inexistant → crash page blanche AccountScreen. Fix : `getStoredPlayerName`
+
+### État actuel du code
+- Version : v5.17 (committée et pushée, commit `d61ab77`)
+- Fichiers modifiés : `src/App.jsx` uniquement
+
+### Ce qui reste à faire (backlog v5.18+)
+1. Supabase Auth — comptes réels, liste d'amis, stats cross-device (projet 1-2 jours)
+2. Nom du personnage joué dans Casting — migration DB (`character_name` dans `credits`)
+3. `original_title` dans `works` pour recherche cross-langue — migration DB séparée
+4. Phase 6 : App iOS via Capacitor
+
+### Pièges à éviter
+- `getStoredPlayerName` (pas `loadPlayerName`) pour lire le pseudo depuis localStorage
+- Les parties "custom" ont `difficultyUsed === "custom"` → ne pas les compter dans les stats par difficulté
+- `statsTrackedRef` dans VersusEndScreen empêche le double-comptage — ne pas retirer ce ref
+- Le numéro de version (l.1794) doit être mis à jour manuellement AVANT chaque push
+- Ne PAS réécrire App.jsx en entier même si demandé
+
+---
+
 ## Session du 2026-06-12 — v5.14 + v5.15
 
 ### Ce qu'on a fait

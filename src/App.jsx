@@ -1695,7 +1695,7 @@ export default function App() {
           <TopRoundButton position="left2" onClick={toggleTheme} title={theme === "light" ? "Mode sombre" : "Mode clair"} themeColors={C}>
             <ThemeIcon isLight={theme === "light"} color={C.ink} />
           </TopRoundButton>
-          {installType && screen === "menu" && (
+          {screen === "menu" && (
             <TopRoundButton position="center" onClick={() => setShowInstallPopup(p => !p)} title="Ajouter à l'écran d'accueil" themeColors={C}>
               <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={C.ink} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M12 2v13M8 11l4 4 4-4"/>
@@ -1773,12 +1773,12 @@ export default function App() {
                                   gamesPlayed={gamesPlayed} />}
 
       {/* Popup PWA "Ajouter à l'écran d'accueil" */}
-      {showInstallPopup && installType && (
+      {showInstallPopup && (
         <>
           <div onClick={() => setShowInstallPopup(false)}
             style={{ position: "fixed", inset: 0, zIndex: 290 }} />
           <div style={{ position: "fixed", top: 62, left: "50%", transform: "translateX(-50%)",
-            zIndex: 300, width: "min(320px, calc(100vw - 32px)",
+            zIndex: 300, width: "min(320px, calc(100vw - 32px))",
             ...glass, borderRadius: 18, padding: 20, boxShadow: "0 8px 32px rgba(0,0,0,0.25)" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14 }}>
               <img src="/icon-192.png" alt="" style={{ width: 48, height: 48, borderRadius: 12, flexShrink: 0 }} />
@@ -1787,19 +1787,22 @@ export default function App() {
                 <div style={{ fontSize: 12, color: C.inkSoft, marginTop: 2 }}>Accès rapide depuis ton écran d'accueil</div>
               </div>
             </div>
-            {installType === "ios" ? (
-              <div style={{ fontSize: 13, color: C.ink, lineHeight: 1.6,
-                background: C.bg, borderRadius: 10, padding: "10px 14px",
-                border: `1px solid ${C.hairline}` }}>
-                Appuie sur <strong>⬆</strong> en bas de Safari,<br/>puis <strong>"Sur l'écran d'accueil"</strong>
-              </div>
-            ) : (
+            {installType === "android" ? (
               <button onClick={handleInstallClick}
                 style={{ ...glassDark, width: "100%", borderRadius: 12, padding: "12px 0", border: "none",
                   fontFamily: "inherit", fontSize: 12, letterSpacing: 1.2, textTransform: "uppercase",
                   fontWeight: 700, cursor: "pointer", color: C.glassDarkInk }}>
                 Installer l'app
               </button>
+            ) : (
+              <div style={{ fontSize: 13, color: C.ink, lineHeight: 1.6,
+                background: C.bg, borderRadius: 10, padding: "10px 14px",
+                border: `1px solid ${C.hairline}` }}>
+                {installType === "ios"
+                  ? <>Appuie sur <strong>⬆</strong> en bas de Safari,<br/>puis <strong>"Sur l'écran d'accueil"</strong></>
+                  : <>Dans Chrome, appuie sur <strong>⋮</strong> puis<br/><strong>"Ajouter à l'écran d'accueil"</strong></>
+                }
+              </div>
             )}
           </div>
         </>
