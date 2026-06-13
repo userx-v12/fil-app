@@ -28,6 +28,160 @@ Lis CLAUDE.md et SESSION_LOG.md. Dis-moi en 3 lignes où on en est et ce qu'on a
 
 ---
 
+## Session du 2026-06-14 — v5.19 (suite)
+
+### Ce qu'on a fait
+
+**3 corrections UI autonomes**
+
+1. **Barre d'actions en bas (pendant les parties)**
+   - Problème : fond semi-transparent (`glassBg` = rgba ~65%) → le contenu défilait en transparence derrière
+   - Fix : fond quasi-opaque `rgba(250,250,250,0.97)` (light) / `rgba(10,14,24,0.97)` (dark) + `backdropFilter` conservé
+   - Ajout `transform: translateZ(0)` → force un GPU layer, corrige le scroll iOS Safari sur `position: fixed`
+   - `src/App.jsx` l.~2686
+
+2. **Stabilité du titre Filmographie / Casting au toggle tri**
+   - Problème : "Trier · Popularité" plus large que "Trier · Rôle" / "Trier · Date" → le titre se décale à gauche au clic
+   - Fix : `minWidth: 95` sur le wrapper `div` du bouton de tri (ActorPicker + MoviePicker)
+   - `src/App.jsx` l.~2906 (ActorPicker) et l.~3013 (MoviePicker)
+
+3. **Taille des images acteurs et affiches**
+   - Acteurs : `ActorPhoto size` 56 → 68px (grille 3 colonnes)
+   - Affiches : `Poster size` 42 → 52px (liste filmographie), `rounded` 7 → 8
+   - `src/App.jsx` l.~2947 et l.~3058
+
+### Bugs corrigés
+Aucun bug — corrections UI uniquement.
+
+### État actuel du code
+- Version affichée : v5.18 (inchangée — pas de changement fonctionnel)
+- Fichier modifié : `src/App.jsx` uniquement
+
+### Ce qui reste à faire (backlog v5.20+)
+1. Supabase Auth (priorité haute)
+2. `character_name` dans `credits`
+3. `original_title` dans `works`
+4. Phase 6 : App iOS via Capacitor
+
+### Pièges à éviter
+- Ne pas repasser à `...glass` pour la barre du bas — le fond semi-transparent laisse voir le contenu qui défile derrière. Utiliser explicitement les rgba opaques.
+
+---
+
+## Session du 2026-06-14 — v5.19
+
+### Ce qu'on a fait
+
+**Sujet 3 — Mode Versus personnalisé (Option A)**
+- Toggle "Standard / Personnalisé" dans VersusCreateScreen (Type de partie)
+- En mode personnalisé : créateur choisit son film de départ via search inline (debounce 250ms, même pattern que CustomScreen)
+- `createMatch` : `custom_mode = true`, `start_id = film choisi`, `end_id = start_id` (placeholder), `difficulty = "custom"`, `optimalSteps = 0`
+- Dans le lobby (créateur) : voit son film + "✓ Film choisi" / "En attente" selon `match.pending_change.invitee_ready`
+- Dans le lobby (invité) : voit "🎬 Mystère" pour le départ + search inline pour choisir son film d'arrivée
+- Invité valide → `saveCustomInviteeFilm(matchId, film)` → UPDATE `pending_change = { custom_end_id, custom_end_type, invitee_ready: true }`
+- Créateur voit le ✓ via Realtime (subscription matches déjà en place)
+- "Démarrer" désactivé tant que `!match.pending_change?.invitee_ready`
+- `handleStart` : extrait `customEnd` depuis `pending_change`, passe à `startMatch`
+- `startMatch` accepte `customEnd` → UPDATE atomique `end_id + end_type + status + victory_condition`
+- Filtres Mode/Difficulté/Options + système de proposition masqués en mode personnalisé
+- `customCreatorFilm` hydraté au chargement du lobby (getWorksByPairs sur start_id)
+- `customCreatorFilm` se refresh si start_id change (useEffect sur `match.start_id`)
+- Fonctions ajoutées : `updateCustomStartFilm`, `saveCustomInviteeFilm` (top-level)
+- Colonne DB ajoutée par Mathieu : `custom_mode BOOLEAN DEFAULT false`
+- Commit : `34e283f`
+
+### Bugs corrigés
+Aucun bug — uniquement features.
+
+### État actuel du code
+- Version affichée : v5.18 (menu non mis à jour — à faire), commit `34e283f`, pushé `main`
+- Fichier modifié : `src/App.jsx` uniquement
+
+### Ce qui reste à faire (backlog v5.20+)
+1. Supabase Auth (priorité haute)
+5. `character_name` dans `credits`
+6. `original_title` dans `works`
+7. Phase 6 : App iOS via Capacitor
+
+### Pièges à éviter
+- En mode personnalisé : `pending_change` est **réutilisé** pour stocker le choix de l'invité `{ custom_end_id, custom_end_type, invitee_ready: true }` — NE PAS confondre avec le système de proposition normal (proposedBySlot, new_start, new_end). Les deux sont mutuellement exclusifs (`custom_mode = true` désactive la proposition).
+- `startMatch` a maintenant 3 params : `(matchId, victoryCondition, customEnd)`. Le `customEnd` est extrait de `match.pending_change` dans `handleStart`. Ne pas oublier ce troisième paramètre si on touche à `startMatch`.
+- En mode personnalisé, `end_id` dans la DB vaut `start_id` jusqu'au lancement (placeholder). C'est l'UPDATE dans `startMatch` qui fixe le vrai `end_id`. Ne pas interpréter ce placeholder comme une erreur.
+- `customCreatorFilm` (state dans VersusLobbyScreen) est uniquement visible par le créateur (slot 1) — l'invité voit "🎬 Mystère".
+
+---
+
+## Session du 2026-06-14 — v5.18 (suite)
+
+### Ce qu'on a fait
+
+**Sujet 1 — Règles de victoire Versus (indices comme pénalité)**
+- Nouvelle priorité : étapes → indices (pénalité) → temps
+- Si égalité d'étapes : celui avec moins d'indices gagne, même s'il est plus lent
+- Si égalité d'étapes ET d'indices : le plus rapide gagne
+- Fichier : `src/App.jsx`
+  - Verdict texte : l.~3436 (bloc `else` de l'égalité d'étapes)
+  - Prop `winner` VersusPlayerCard joueur : ajout condition `myHintsUsed < opponentHintsUsed`
+  - Prop `winner` VersusPlayerCard adversaire : symétrique
+
+**Sujet 4 — Suivi live du parcours adversaire après avoir fini**
+- Quand un joueur a fini mais l'adversaire joue encore → PathStrip de l'adversaire en direct
+- Nouveau state `opponentLivePath` (raw IDs) dans Game, alimenté par la subscription Realtime existante sur `match_players` (champ `current_path`)
+- Nouveau state `opponentLiveHydrated` dans VersusEndScreen, hydraté via useEffect à chaque update de `opponentLivePath`
+- Affiché dans le bloc `!bothDone` avec bordure `versusOpponent` et label "Parcours de X en direct"
+- Fichier : `src/App.jsx`
+  - `opponentLivePath` state : l.~2258
+  - Realtime capture : l.~2318 (`setOpponentLivePath(p.current_path)` si `!p.finished`)
+  - Prop passée à VersusEndScreen : l.~2553
+  - `opponentLiveHydrated` state + useEffect hydration : dans VersusEndScreen, juste avant l'useEffect `bothDone`
+  - Affichage : dans le bloc `!bothDone`, après les deux VersusPlayerCard
+
+**Sujet 2 — Condition de victoire configurable**
+- 2 modes : **Étapes** (DB : `hybrid`) et **Temps** (DB : `time`)
+- Mode Étapes : étapes → indices → temps (comportement historique)
+- Mode Temps : temps → indices → étapes → égalité parfaite (inverse)
+- Colonne `victory_condition` déjà présente en DB (VARCHAR, DEFAULT `'hybrid'`)
+- Toggle 2 boutons dans VersusCreateScreen (entre Difficulté et Options du défi)
+- Toggle 2 boutons dans VersusLobbyScreen (créateur uniquement, dans le bloc `iAmCreator`)
+- `createMatch` accepte `victoryCondition` → INSERT dans DB
+- `startMatch` accepte `victoryCondition` → UPDATE dans DB au lancement (écrase la valeur de création)
+- `prepareAndStartVersusGame` lit `match.victory_condition` → stocké dans `versusContext.victoryCondition`
+- VersusEndScreen reçoit `victoryCondition` en prop → verdict branché (if `"time"` / else `"hybrid"`)
+- Label "Mode Temps" / "Mode Étapes" affiché sous "Versus" en fin de partie
+- `versusPrefs` initialisé avec `victoryCondition: "hybrid"` (l.~1285)
+- Revanche : passe aussi `victoryCondition` à `createMatch`
+
+**Numéro de version**
+- Menu mis à jour : `v5.17` → `v5.18` (l.1903)
+- Commit pushé : `c8533c7`
+
+### Bugs corrigés
+Aucun bug — uniquement des features.
+
+### État actuel du code
+- Version affichée : v5.18, commit `c8533c7`, pushé sur `main`
+- Fichiers modifiés cette session : `src/App.jsx` uniquement + `package.json` / `package-lock.json` (déjà modifiés avant)
+- Tout compilé sans erreur
+
+### Ce qui reste à faire (backlog v5.19+)
+1. Sujet 3 — Versus personnalisé : créateur choisit le départ, invité choisit l'arrivée (Option A validée) — mode optionnel, pas le défaut
+2. Supabase Auth — comptes réels, liste d'amis, stats cross-device (priorité haute)
+3. `character_name` dans `credits` — migration DB pour afficher le rôle joué dans le casting
+4. `original_title` dans `works` — migration DB pour recherche cross-langue
+5. Phase 6 : App iOS via Capacitor
+
+### Pièges à éviter
+- **`victory_condition` est sauvegardée 2 fois** : à `createMatch` (INSERT) ET à `startMatch` (UPDATE). C'est voulu — le lobby peut changer la valeur entre création et lancement. Ne pas supprimer le UPDATE dans `startMatch`.
+- **Mode Étapes = valeur DB `hybrid`** — ne pas confondre avec un hypothétique `steps` qui n'existe pas et n'a jamais été implémenté
+- **`opponentLivePath` ne se met à jour que si `!p.finished`** — intentionnel : une fois fini, c'est `opponentPath` (hydraté depuis DB) qui prend le relais
+- **L'hydration live repart à zéro à chaque update du path** — pas de cache incrémental. Si performances problématiques un jour, ajouter un ref-cache des IDs déjà fetché
+- Le verdict dans VersusEndScreen ET les props `winner` des VersusPlayerCard doivent rester synchronisés — si on touche l'un, toucher l'autre
+- NE JAMAIS remettre un fetch handler dans `sw.js` (Safari cassé)
+- `getStoredPlayerName` (pas `loadPlayerName`)
+- `versusContext.opponentPlayerId` peut être null
+
+---
+
 ## Session du 2026-06-13 — v5.18
 
 ### Ce qu'on a fait

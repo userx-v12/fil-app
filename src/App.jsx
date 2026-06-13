@@ -2683,8 +2683,13 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
         </div>
       )}
 
-      <div style={{ position: "fixed", bottom: 16, left: 16, right: 16, ...glass, borderRadius: 999,
-        padding: "8px 12px", display: "flex", justifyContent: "space-between", alignItems: "center",
+      <div style={{ position: "fixed", bottom: 16, left: 16, right: 16,
+        background: C.name === "light" ? "rgba(250,250,250,0.97)" : "rgba(10,14,24,0.97)",
+        backdropFilter: "blur(20px) saturate(140%)", WebkitBackdropFilter: "blur(20px) saturate(140%)",
+        border: `1px solid ${C.hairline}`,
+        boxShadow: C.name === "light" ? "0 -2px 12px rgba(15,23,41,0.08)" : "0 -2px 12px rgba(0,0,0,0.3)",
+        transform: "translateZ(0)",
+        borderRadius: 999, padding: "8px 12px", display: "flex", justifyContent: "space-between", alignItems: "center",
         gap: 8, maxWidth: 520, margin: "0 auto", zIndex: 60 }}>
         <button onClick={undo} disabled={path.length <= 1 && !selectedActor} title="Retour"
           style={{ ...iconBtn(C),
@@ -2903,7 +2908,7 @@ function ActorPicker({ title, actors, onPick, greenId, yellowIds, sort, onToggle
           </svg>
         </button>
         {onToggleSort && (
-          <div style={{ flexShrink: 0, display: "flex", justifyContent: "flex-end" }}>
+          <div style={{ flexShrink: 0, display: "flex", justifyContent: "flex-end", minWidth: 95 }}>
             <button onClick={onToggleSort}
               style={{ background: "none", border: "none", color: C.inkSoft, fontFamily: "inherit",
                 fontSize: 10, fontWeight: 600, letterSpacing: 0.8, textTransform: "uppercase",
@@ -2944,7 +2949,7 @@ function ActorPicker({ title, actors, onPick, greenId, yellowIds, sort, onToggle
                 boxShadow: active ? `0 0 0 2px ${hColor}40, 0 0 24px ${hColor}30` : "none" }}
               onMouseEnter={(e) => { if (!active) { e.currentTarget.style.background = C.cardHover; e.currentTarget.style.transform = "translateY(-2px)"; } }}
               onMouseLeave={(e) => { if (!active) { e.currentTarget.style.background = C.cardBg; e.currentTarget.style.transform = "translateY(0)"; } }}>
-              <ActorPhoto actor={a} size={56} highlight={active} highlightColor={hColor} themeColors={C} />
+              <ActorPhoto actor={a} size={68} highlight={active} highlightColor={hColor} themeColors={C} />
               <span style={{ fontSize: 11, fontWeight: 600, color: C.ink, textAlign: "center", lineHeight: 1.2 }}>{a.name}</span>
             </button>
           );
@@ -3010,7 +3015,7 @@ function MoviePicker({ title, movies, targetWork, onPick, onClose, greenWork, ye
             <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
           </svg>
         </button>
-        <div style={{ flexShrink: 0, display: "flex", justifyContent: "flex-end" }}>
+        <div style={{ flexShrink: 0, display: "flex", justifyContent: "flex-end", minWidth: 95 }}>
           <button onClick={onToggleSort}
             style={{ background: "none", border: "none", color: C.inkSoft, fontFamily: "inherit",
               fontSize: 10, fontWeight: 600, letterSpacing: 0.8, textTransform: "uppercase",
@@ -3055,7 +3060,7 @@ function MoviePicker({ title, movies, targetWork, onPick, onClose, greenWork, ye
                 boxShadow: active ? `0 0 0 2px ${hColor}40` : "none" }}
               onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = C.cardHover; }}
               onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = C.cardBg2; }}>
-              <Poster movie={m} size={42} rounded={7} highlight={active} highlightColor={hColor} themeColors={C} />
+              <Poster movie={m} size={52} rounded={8} highlight={active} highlightColor={hColor} themeColors={C} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 14, fontWeight: 700, letterSpacing: -0.3, color: C.ink,
                   whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.title}</div>
