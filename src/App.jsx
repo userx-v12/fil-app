@@ -1281,6 +1281,43 @@ export default function App() {
   const [versusCode, setVersusCode] = useState(null); // Code de partie Versus en cours
   const [versusContext, setVersusContext] = useState(null); // Contexte du jeu Versus { matchId, code, myPlayerId, mySlot, myName, opponentName, opponentPlayerId }
   const [versusPrefs, setVersusPrefs] = useState(() => ({ ...DEFAULT_PREFS })); // Prefs Versus indépendantes des prefs globales, partagées entre Create et Lobby
+  const [installPrompt, setInstallPrompt] = useState(null);  // Android : event beforeinstallprompt
+  const [showInstallBanner, setShowInstallBanner] = useState(false);
+  const installDismissedKey = "fil-install-dismissed";
+
+  // PWA : capture le prompt Android, détecte iOS
+  useEffect(() => {
+    const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    const isInStandalone = window.navigator.standalone === true;
+    const dismissed = localStorage.getItem(installDismissedKey);
+    if (dismissed) return;
+
+    if (isIos && !isInStandalone) {
+      setTimeout(() => setShowInstallBanner("ios"), 3000);
+      return;
+    }
+    const handler = (e) => {
+      e.preventDefault();
+      setInstallPrompt(e);
+      setTimeout(() => setShowInstallBanner("android"), 3000);
+    };
+    window.addEventListener("beforeinstallprompt", handler);
+    return () => window.removeEventListener("beforeinstallprompt", handler);
+  }, []);
+
+  function handleInstallClick() {
+    if (installPrompt) {
+      installPrompt.prompt();
+      installPrompt.userChoice.then(() => {
+        setInstallPrompt(null);
+        setShowInstallBanner(false);
+      });
+    }
+  }
+  function dismissInstallBanner() {
+    localStorage.setItem(installDismissedKey, "1");
+    setShowInstallBanner(false);
+  }
 
   useEffect(() => { savePrefs(prefs); }, [prefs]);
   useEffect(() => { document.body.style.background = C.bg; saveTheme(theme); }, [theme, C.bg]);
@@ -1730,6 +1767,40 @@ export default function App() {
                                 themeColors={C} glass={glass} />}
       {screen === "account" && <AccountScreen onBack={() => setScreen("menu")} themeColors={C} glass={glass} glassDark={glassDark}
                                   gamesPlayed={gamesPlayed} />}
+
+      {/* Bannière PWA "Ajouter à l'écran d'accueil" */}
+      {showInstallBanner && (
+        <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 300,
+          padding: "12px 16px 20px", background: C.bg,
+          borderTop: `1px solid ${C.hairline}`, display: "flex", gap: 10, alignItems: "center" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
+            <img src="/icon-192.png" alt="" style={{ width: 40, height: 40, borderRadius: 10, flexShrink: 0 }} />
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.ink, letterSpacing: -0.3 }}>Ajouter Fil</div>
+              {showInstallBanner === "ios"
+                ? <div style={{ fontSize: 11, color: C.inkSoft, marginTop: 1 }}>Appuie sur <strong>⬆</strong> puis "Sur l'écran d'accueil"</div>
+                : <div style={{ fontSize: 11, color: C.inkSoft, marginTop: 1 }}>Installe l'app pour y accéder depuis ton écran d'accueil</div>
+              }
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+            {showInstallBanner === "android" && (
+              <button onClick={handleInstallClick}
+                style={{ ...glassDark, borderRadius: 999, padding: "8px 14px", border: "none",
+                  fontFamily: "inherit", fontSize: 11, letterSpacing: 1, textTransform: "uppercase",
+                  fontWeight: 700, cursor: "pointer", color: C.glassDarkInk }}>
+                Installer
+              </button>
+            )}
+            <button onClick={dismissInstallBanner}
+              style={{ background: "transparent", border: `1px solid ${C.hairline}`, borderRadius: 999,
+                padding: "8px 12px", fontFamily: "inherit", fontSize: 11, letterSpacing: 1,
+                textTransform: "uppercase", fontWeight: 700, color: C.inkMute, cursor: "pointer" }}>
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
     </Background>
   );
 }
