@@ -2121,7 +2121,15 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
   const [loadingFilmo, setLoadingFilmo] = useState(false);
   const [castReloadEmpty, setCastReloadEmpty] = useState(false);
   const [filmoReloadEmpty, setFilmoReloadEmpty] = useState(false);
-  const [startTime] = useState(Date.now());
+  const [startTime] = useState(() => {
+    if (!versusContext) return Date.now();
+    const key = `vs_start:${versusContext.matchId}:${versusContext.myPlayerId}`;
+    const stored = localStorage.getItem(key);
+    if (stored) return parseInt(stored, 10);
+    const t = Date.now();
+    localStorage.setItem(key, String(t));
+    return t;
+  });
   const [elapsed, setElapsed] = useState(0);
   const [clicks, setClicks] = useState(0);
   const [hintsUsed, setHintsUsed] = useState(0);
@@ -2140,6 +2148,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
   const [opponentFinalSteps, setOpponentFinalSteps] = useState(null);
   const [opponentFinalTimeMs, setOpponentFinalTimeMs] = useState(null);
   const [opponentHintsUsed, setOpponentHintsUsed] = useState(0);
+  const [opponentDisconnectedAt, setOpponentDisconnectedAt] = useState(null);
 
   const currentMovie = path[path.length - 1].data;
   const isAtEnd = currentMovie.id === challenge.end.id && currentMovie.type === challenge.end.type;
@@ -2205,6 +2214,44 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
 
     return () => { supabase.removeChannel(channel); };
   }, [isVersus, versusContext]);
+
+  // VERSUS : Presence channel pour détecter la déconnexion de l'adversaire
+  useEffect(() => {
+    if (!isVersus) return;
+    const ch = supabase.channel(`presence:game-${versusContext.matchId}`, {
+      config: { presence: { key: String(versusContext.myPlayerId) } },
+    });
+    ch.on("presence", { event: "leave" }, ({ key }) => {
+      if (versusContext.opponentPlayerId && key === String(versusContext.opponentPlayerId)) {
+        setOpponentDisconnectedAt(Date.now());
+      }
+    });
+    ch.on("presence", { event: "join" }, ({ key }) => {
+      if (versusContext.opponentPlayerId && key === String(versusContext.opponentPlayerId)) {
+        setOpponentDisconnectedAt(null);
+      }
+    });
+    ch.subscribe(async (status) => {
+      if (status === "SUBSCRIBED") await ch.track({ playerId: versusContext.myPlayerId });
+    });
+    return () => { supabase.removeChannel(ch); };
+  }, [isVersus, versusContext]);
+
+  // VERSUS : victoire automatique si l'adversaire reste déconnecté 30s
+  useEffect(() => {
+    if (!opponentDisconnectedAt || !isVersus || finished) return;
+    if (Date.now() - opponentDisconnectedAt < 30000) return;
+    const finalSteps = Math.max(0, Math.floor((path.length - 1) / 2));
+    const finalTimeMs = Date.now() - startTime;
+    setFinished(true);
+    onFinished?.();
+    finishPlayer(versusContext.myPlayerId, { finalSteps, finalTimeMs, abandoned: false, hintsUsed }).catch(() => {});
+    if (versusContext.opponentPlayerId) {
+      finishPlayer(versusContext.opponentPlayerId, {
+        finalSteps: opponentSteps, finalTimeMs: elapsed, abandoned: true, hintsUsed: opponentHintsUsed,
+      }).catch(() => {});
+    }
+  }, [elapsed, opponentDisconnectedAt, isVersus, finished]);
 
   useEffect(() => {
     if (finished) return;
@@ -2424,6 +2471,17 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
           opponentFinalSteps={opponentFinalSteps}
           themeColors={C} glass={glass} />
       )}
+
+      {isVersus && opponentDisconnectedAt && (() => {
+        const secondsLeft = Math.max(0, 30 - Math.floor((Date.now() - opponentDisconnectedAt) / 1000));
+        return (
+          <div style={{ background: C.amber, color: "#fff", borderRadius: 10,
+            padding: "10px 16px", marginBottom: 12, fontSize: 13, fontWeight: 600,
+            textAlign: "center", letterSpacing: 0.5 }}>
+            {versusContext.opponentName} s'est déconnecté — victoire dans {secondsLeft}s
+          </div>
+        );
+      })()}
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 24 }}>
         <Goal label="Départ" movie={challenge.start} themeColors={C}
@@ -4283,9 +4341,10 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
     };
   }, [code]);
 
-  // Charge les œuvres du défi pour affichage. Re-fetch quand start/end changent (re-roll accepté).
+  // Charge les œuvres du défi pour affichage. Gating sur bothReady : les deux joueurs
+  // découvrent les affiches au même moment, dès que la partie est au complet.
   useEffect(() => {
-    if (!match?.start_id || !match?.end_id) return;
+    if (!match?.start_id || !match?.end_id || !bothReady) return;
     let cancelled = false;
     getWorksByPairs([
       { id: match.start_id, type: match.start_type },
@@ -4294,7 +4353,7 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
       if (!cancelled) setDefiWorks({ start: works[0], end: works[1] });
     }).catch(() => {});
     return () => { cancelled = true; };
-  }, [match?.start_id, match?.start_type, match?.end_id, match?.end_type]);
+  }, [match?.start_id, match?.start_type, match?.end_id, match?.end_type, bothReady]);
 
   // Auto-démarre le jeu quand le match passe en "playing"
   // (déclenché pour J1 par son click, pour J2 par l'echo realtime)
@@ -4511,51 +4570,62 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
       )}
 
       {/* Le défi en cours (affiches start/end + boutons refresh) */}
-      {defiWorks.start && defiWorks.end && (
-        <div style={{ ...glass, borderRadius: 22, padding: "20px 16px", marginBottom: 20 }}>
-          <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, marginBottom: 16, fontWeight: 600, textAlign: "center" }}>
-            Le défi
-          </div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
-            <LobbyDefiSide
-              label="Départ" movie={defiWorks.start} align="left"
-              onRefresh={bothReady && !pendingChange ? () => handleProposeChange("start") : null}
-              refreshing={refreshing === "start"}
-              disabledAll={!!pendingChange || !!refreshing}
-              themeColors={C} />
-            <div style={{ flex: 1, height: 1, background: C.hairline, marginTop: 56 }} />
-            <LobbyDefiSide
-              label="Arrivée" movie={defiWorks.end} align="right"
-              onRefresh={bothReady && !pendingChange ? () => handleProposeChange("end") : null}
-              refreshing={refreshing === "end"}
-              disabledAll={!!pendingChange || !!refreshing}
-              themeColors={C} />
-          </div>
-          {/* Bouton "Nouveau défi" en bas (les deux films à la fois) */}
-          {bothReady && !pendingChange && (
-            <button onClick={() => handleProposeChange("both")} disabled={!!refreshing}
-              style={{ ...glass, borderRadius: 999, padding: "10px 16px",
-                border: `1px solid ${C.hairline}`, width: "100%", marginTop: 16,
-                fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase",
-                cursor: refreshing ? "not-allowed" : "pointer", fontFamily: "inherit",
-                color: C.ink, fontWeight: 700, opacity: refreshing ? 0.5 : 1,
-                display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-              {refreshing === "both" ? (
-                <>Recherche<AnimatedDots /></>
-              ) : (
-                <>
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="23 4 23 10 17 10"/>
-                    <polyline points="1 20 1 14 7 14"/>
-                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-                  </svg>
-                  Nouveau défi
-                </>
-              )}
-            </button>
-          )}
+      <div style={{ ...glass, borderRadius: 22, padding: "20px 16px", marginBottom: 20 }}>
+        <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, marginBottom: 16, fontWeight: 600, textAlign: "center" }}>
+          Le défi
         </div>
-      )}
+        {!bothReady
+          ? <div style={{ padding: "16px 0", textAlign: "center", color: C.inkMute, fontSize: 13 }}>
+              Les affiches seront révélées quand l'adversaire rejoindra.
+            </div>
+          : (() => {
+              const displayStart = pendingChange ? pendingChange.new_start : defiWorks.start;
+              const displayEnd   = pendingChange ? pendingChange.new_end   : defiWorks.end;
+              if (!displayStart || !displayEnd) return <Spinner label="Chargement du défi…" themeColors={C} />;
+              return (
+                <>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+                    <LobbyDefiSide
+                      label="Départ" movie={displayStart} align="left"
+                      onRefresh={!pendingChange ? () => handleProposeChange("start") : null}
+                      refreshing={refreshing === "start"}
+                      disabledAll={!!pendingChange || !!refreshing}
+                      themeColors={C} />
+                    <div style={{ flex: 1, height: 1, background: C.hairline, marginTop: 56 }} />
+                    <LobbyDefiSide
+                      label="Arrivée" movie={displayEnd} align="right"
+                      onRefresh={!pendingChange ? () => handleProposeChange("end") : null}
+                      refreshing={refreshing === "end"}
+                      disabledAll={!!pendingChange || !!refreshing}
+                      themeColors={C} />
+                  </div>
+                  {!pendingChange && (
+                    <button onClick={() => handleProposeChange("both")} disabled={!!refreshing}
+                      style={{ ...glass, borderRadius: 999, padding: "10px 16px",
+                        border: `1px solid ${C.hairline}`, width: "100%", marginTop: 16,
+                        fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase",
+                        cursor: refreshing ? "not-allowed" : "pointer", fontFamily: "inherit",
+                        color: C.ink, fontWeight: 700, opacity: refreshing ? 0.5 : 1,
+                        display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                      {refreshing === "both" ? (
+                        <>Recherche<AnimatedDots /></>
+                      ) : (
+                        <>
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <polyline points="23 4 23 10 17 10"/>
+                            <polyline points="1 20 1 14 7 14"/>
+                            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                          </svg>
+                          Nouveau défi
+                        </>
+                      )}
+                    </button>
+                  )}
+                </>
+              );
+            })()
+        }
+      </div>
 
       {/* Filtres du défi (créateur uniquement) — modifiables avant "Démarrer" */}
       {iAmCreator && versusPrefs && setVersusPrefs && (
