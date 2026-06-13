@@ -518,7 +518,7 @@ async function pickPartnerFor(fixed, prefs, forHard = false) {
 // API VERSUS
 // =========================================================================
 
-async function createMatch({ startWork, endWork, optimalSteps, difficulty }) {
+async function createMatch({ startWork, endWork, optimalSteps, difficulty, victoryCondition = "hybrid" }) {
   // Génère un code unique (retry si collision, très rare avec 10^6 possibilités)
   let code = null;
   for (let i = 0; i < 5; i++) {
@@ -536,6 +536,7 @@ async function createMatch({ startWork, endWork, optimalSteps, difficulty }) {
       end_id: endWork.id,     end_type: endWork.type,
       optimal_steps: optimalSteps,
       difficulty,
+      victory_condition: victoryCondition,
       status: "waiting",
     })
     .select()
@@ -590,10 +591,10 @@ async function joinMatch(matchId, playerName, slot) {
   return data;
 }
 
-async function startMatch(matchId) {
+async function startMatch(matchId, victoryCondition = "hybrid") {
   const { data, error } = await supabase
     .from("matches")
-    .update({ status: "playing", started_at: new Date().toISOString() })
+    .update({ status: "playing", started_at: new Date().toISOString(), victory_condition: victoryCondition })
     .eq("id", matchId)
     .select()
     .single();
@@ -1282,7 +1283,7 @@ export default function App() {
   const [showInfo, setShowInfo] = useState(false);
   const [versusCode, setVersusCode] = useState(null); // Code de partie Versus en cours
   const [versusContext, setVersusContext] = useState(null); // Contexte du jeu Versus { matchId, code, myPlayerId, mySlot, myName, opponentName, opponentPlayerId }
-  const [versusPrefs, setVersusPrefs] = useState(() => ({ ...DEFAULT_PREFS })); // Prefs Versus indépendantes des prefs globales, partagées entre Create et Lobby
+  const [versusPrefs, setVersusPrefs] = useState(() => ({ ...DEFAULT_PREFS, victoryCondition: "hybrid" })); // Prefs Versus indépendantes des prefs globales, partagées entre Create et Lobby
   const [installPrompt, setInstallPrompt] = useState(null);  // Android : event beforeinstallprompt
   const [installType, setInstallType] = useState(null);      // null | "android" | "ios"
   const [showInstallPopup, setShowInstallPopup] = useState(false);
@@ -1561,6 +1562,7 @@ export default function App() {
         myName: me.player_name,
         opponentName: opp?.player_name || "Adversaire",
         opponentPlayerId: opp?.id || null,
+        victoryCondition: match.victory_condition || "hybrid",
       });
       setGameKey(k => k + 1);
       setScreen("game");
@@ -1621,6 +1623,7 @@ export default function App() {
       const newMatch = await createMatch({
         startWork: chosen.start, endWork: chosen.end,
         optimalSteps: chosen.steps, difficulty: target,
+        victoryCondition: versusPrefs.victoryCondition || "hybrid",
       });
 
       // 4. Tente de poser le rematch_code sur l'ancien match de façon atomique
@@ -1897,7 +1900,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.17</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.18</div>
     </div>
   );
 }
@@ -2255,6 +2258,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
   const [opponentFinalTimeMs, setOpponentFinalTimeMs] = useState(null);
   const [opponentHintsUsed, setOpponentHintsUsed] = useState(0);
   const [opponentDisconnectedAt, setOpponentDisconnectedAt] = useState(null);
+  const [opponentLivePath, setOpponentLivePath] = useState(null);
 
   const currentMovie = path[path.length - 1].data;
   const isAtEnd = currentMovie.id === challenge.end.id && currentMovie.type === challenge.end.type;
@@ -2315,6 +2319,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
         setOpponentFinalSteps(p.final_steps);
         setOpponentFinalTimeMs(p.final_time_ms);
         setOpponentHintsUsed(p.hints_used || 0);
+        if (!p.finished && Array.isArray(p.current_path)) setOpponentLivePath(p.current_path);
       })
       .subscribe();
 
@@ -2548,6 +2553,8 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
             opponentFinalSteps={opponentFinalSteps}
             opponentFinalTimeMs={opponentFinalTimeMs}
             opponentHintsUsed={opponentHintsUsed}
+            opponentLivePath={opponentLivePath}
+            victoryCondition={versusContext.victoryCondition || "hybrid"}
             optimalSteps={challenge.optimal ? Math.max(0, Math.floor((challenge.optimal.length - 1) / 2)) : null}
             optimalPath={challenge.optimal}
             startWork={challenge.start} endWork={challenge.end}
@@ -3319,7 +3326,8 @@ function VersusEndScreen({
   myName, opponentName,
   myPath, mySteps, myTimeMs, myAbandoned, myHintsUsed,
   opponentFinished, opponentAbandoned, opponentSteps,
-  opponentFinalSteps, opponentFinalTimeMs, opponentHintsUsed,
+  opponentFinalSteps, opponentFinalTimeMs, opponentHintsUsed, opponentLivePath,
+  victoryCondition = "hybrid",
   optimalSteps, optimalPath,
   startWork, endWork,
   onExit, onStartRematch, onJoinRematch,
@@ -3334,6 +3342,7 @@ function VersusEndScreen({
 
   const bothDone = opponentFinished;
   const [opponentPath, setOpponentPath] = useState(null);
+  const [opponentLiveHydrated, setOpponentLiveHydrated] = useState(null);
   const [rematchCode, setRematchCode] = useState(null);
   const [requestingRematch, setRequestingRematch] = useState(false);
   const statsTrackedRef = useRef(false);
@@ -3356,6 +3365,38 @@ function VersusEndScreen({
     if (!myAbandoned && optimalSteps !== null && mySteps <= optimalSteps) incVersusOptimal();
     addVersusHints(myHintsUsed);
   }, [bothDone]);
+
+  // Hydrate le chemin live de l'adversaire pendant qu'il joue encore
+  useEffect(() => {
+    if (!opponentLivePath || opponentLivePath.length === 0 || bothDone) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const workPairs = opponentLivePath.filter(n => n.type === "movie").map(n => ({ id: n.id, type: n.work_type }));
+        const actorIds = opponentLivePath.filter(n => n.type === "actor").map(n => n.id);
+        const [works, actorsData] = await Promise.all([
+          workPairs.length > 0 ? getWorksByPairs(workPairs) : Promise.resolve([]),
+          actorIds.length > 0
+            ? supabase.from("actors").select("id, name, profile_path, popularity").in("id", actorIds).then(r => r.data || [])
+            : Promise.resolve([]),
+        ]);
+        if (cancelled) return;
+        const workMap = new Map((works || []).filter(Boolean).map(w => [`${w.id}:${w.type}`, w]));
+        const actorMap = new Map((actorsData || []).map(a => [a.id, a]));
+        const hydrated = opponentLivePath.map(n => {
+          if (n.type === "movie") {
+            const w = workMap.get(`${n.id}:${n.work_type}`);
+            return { type: "movie", data: w || { id: n.id, type: n.work_type, title: "…" } };
+          } else {
+            const a = actorMap.get(n.id);
+            return { type: "actor", data: a || { id: n.id, name: "…" } };
+          }
+        });
+        setOpponentLiveHydrated(hydrated);
+      } catch (e) { /* silently ignore */ }
+    })();
+    return () => { cancelled = true; };
+  }, [opponentLivePath, bothDone]);
 
   // Hydrate le chemin de l'adversaire quand il a fini
   useEffect(() => {
@@ -3433,14 +3474,40 @@ function VersusEndScreen({
       verdict = `${opponentName} gagne par abandon`; verdictColor = C.amber;
     } else if (opponentAbandoned) {
       verdict = "Tu gagnes par abandon"; verdictColor = C.green;
-    } else if (mySteps < (opponentFinalSteps ?? Infinity)) {
-      verdict = "🏆 Tu gagnes"; verdictColor = C.green;
-    } else if (mySteps > (opponentFinalSteps ?? Infinity)) {
-      verdict = `${opponentName} gagne`; verdictColor = C.amber;
+    } else if (victoryCondition === "time") {
+      // Mode Temps : temps d'abord, puis indices, puis étapes
+      const oppTime = opponentFinalTimeMs ?? Infinity;
+      const oppSteps = opponentFinalSteps ?? Infinity;
+      if (myTimeMs < oppTime) {
+        verdict = "🏆 Tu gagnes (plus rapide)"; verdictColor = C.green;
+      } else if (myTimeMs > oppTime) {
+        verdict = `${opponentName} gagne (plus rapide)`; verdictColor = C.amber;
+      } else if (myHintsUsed < opponentHintsUsed) {
+        verdict = "🏆 Tu gagnes (moins d'indices)"; verdictColor = C.green;
+      } else if (myHintsUsed > opponentHintsUsed) {
+        verdict = `${opponentName} gagne (moins d'indices)`; verdictColor = C.amber;
+      } else if (mySteps < oppSteps) {
+        verdict = "🏆 Tu gagnes (moins d'étapes)"; verdictColor = C.green;
+      } else if (mySteps > oppSteps) {
+        verdict = `${opponentName} gagne (moins d'étapes)`; verdictColor = C.amber;
+      } else {
+        verdict = "Égalité parfaite"; verdictColor = C.inkSoft;
+      }
     } else {
-      if (myTimeMs < (opponentFinalTimeMs ?? Infinity)) {
+      // Mode Étapes (hybrid) : étapes d'abord, puis indices, puis temps
+      const oppSteps = opponentFinalSteps ?? Infinity;
+      const oppTime = opponentFinalTimeMs ?? Infinity;
+      if (mySteps < oppSteps) {
+        verdict = "🏆 Tu gagnes"; verdictColor = C.green;
+      } else if (mySteps > oppSteps) {
+        verdict = `${opponentName} gagne`; verdictColor = C.amber;
+      } else if (myHintsUsed < opponentHintsUsed) {
+        verdict = "🏆 Tu gagnes (moins d'indices)"; verdictColor = C.green;
+      } else if (myHintsUsed > opponentHintsUsed) {
+        verdict = `${opponentName} gagne (moins d'indices)`; verdictColor = C.amber;
+      } else if (myTimeMs < oppTime) {
         verdict = "🏆 Tu gagnes (au temps)"; verdictColor = C.green;
-      } else if (myTimeMs > (opponentFinalTimeMs ?? Infinity)) {
+      } else if (myTimeMs > oppTime) {
         verdict = `${opponentName} gagne (au temps)`; verdictColor = C.amber;
       } else {
         verdict = "Égalité parfaite"; verdictColor = C.inkSoft;
@@ -3475,7 +3542,10 @@ function VersusEndScreen({
 
   return (
     <div style={{ textAlign: "center", paddingTop: 8, position: "relative" }}>
-      <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkMute, marginBottom: 12, fontWeight: 600 }}>Versus</div>
+      <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkMute, marginBottom: 4, fontWeight: 600 }}>Versus</div>
+      <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: C.inkMute, marginBottom: 12, fontWeight: 500 }}>
+        {victoryCondition === "time" ? "Mode Temps" : "Mode Étapes"}
+      </div>
 
       {bothDone ? (
         <>
@@ -3489,9 +3559,13 @@ function VersusEndScreen({
               steps={mySteps} timeMs={myTimeMs}
               abandoned={myAbandoned} hintsUsed={myHintsUsed}
               winner={!myAbandoned && (
-                opponentAbandoned ||
-                mySteps < (opponentFinalSteps ?? Infinity) ||
-                (mySteps === (opponentFinalSteps ?? Infinity) && myTimeMs < (opponentFinalTimeMs ?? Infinity))
+                opponentAbandoned || (() => {
+                  const os = opponentFinalSteps ?? Infinity, ot = opponentFinalTimeMs ?? Infinity;
+                  if (victoryCondition === "time") {
+                    return myTimeMs < ot || (myTimeMs === ot && myHintsUsed < opponentHintsUsed) || (myTimeMs === ot && myHintsUsed === opponentHintsUsed && mySteps < os);
+                  }
+                  return mySteps < os || (mySteps === os && myHintsUsed < opponentHintsUsed) || (mySteps === os && myHintsUsed === opponentHintsUsed && myTimeMs < ot);
+                })()
               )}
               themeColors={C} glass={glass} />
             <VersusPlayerCard
@@ -3500,10 +3574,13 @@ function VersusEndScreen({
               timeMs={opponentFinalTimeMs}
               abandoned={opponentAbandoned}
               hintsUsed={opponentHintsUsed}
-              winner={!opponentAbandoned && !myAbandoned && (
-                (opponentFinalSteps ?? Infinity) < mySteps ||
-                ((opponentFinalSteps ?? Infinity) === mySteps && (opponentFinalTimeMs ?? Infinity) < myTimeMs)
-              )}
+              winner={!opponentAbandoned && !myAbandoned && (() => {
+                const os = opponentFinalSteps ?? Infinity, ot = opponentFinalTimeMs ?? Infinity;
+                if (victoryCondition === "time") {
+                  return ot < myTimeMs || (ot === myTimeMs && opponentHintsUsed < myHintsUsed) || (ot === myTimeMs && opponentHintsUsed === myHintsUsed && os < mySteps);
+                }
+                return os < mySteps || (os === mySteps && opponentHintsUsed < myHintsUsed) || (os === mySteps && opponentHintsUsed === myHintsUsed && ot < myTimeMs);
+              })()}
               themeColors={C} glass={glass} />
           </div>
 
@@ -3566,6 +3643,17 @@ function VersusEndScreen({
               hintsUsed={opponentHintsUsed}
               themeColors={C} glass={glass} />
           </div>
+
+          {!myAbandoned && opponentLiveHydrated && opponentLiveHydrated.length > 0 && (
+            <div style={{ ...glass, borderRadius: 16, padding: 14, marginBottom: 10, textAlign: "left",
+              borderLeft: `3px solid ${C.versusOpponent}` }}>
+              <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.versusOpponent, marginBottom: 10, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ width: 8, height: 8, borderRadius: "50%", background: C.versusOpponent, display: "inline-block" }} />
+                Parcours de {opponentName} en direct
+              </div>
+              <PathStrip path={opponentLiveHydrated} themeColors={C} />
+            </div>
+          )}
         </>
       )}
 
@@ -4077,6 +4165,7 @@ function VersusCreateScreen({ onBack, onCreated, versusPrefs, setVersusPrefs, th
         endWork: chosen.end,
         optimalSteps: chosen.steps,
         difficulty: target,
+        victoryCondition: versusPrefs.victoryCondition || "hybrid",
       });
 
       // Le créateur rejoint en slot 1
@@ -4159,6 +4248,27 @@ function VersusCreateScreen({ onBack, onCreated, versusPrefs, setVersusPrefs, th
           })}
         </div>
         <div style={{ fontSize: 11, color: C.inkMute, marginTop: 6, fontWeight: 500 }}>{DIFFICULTIES[versusPrefs.difficulty].sub}</div>
+      </div>
+
+      <div style={{ marginBottom: 18 }}>
+        <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 10 }}>Condition de victoire</div>
+        <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
+          {[{ key: "hybrid", label: "Étapes" }, { key: "time", label: "Temps" }].map(({ key, label }) => {
+            const active = (versusPrefs.victoryCondition || "hybrid") === key;
+            return (
+              <button key={key} onClick={() => setVersusPrefs(p => ({ ...p, victoryCondition: key }))} disabled={creating}
+                style={{ flex: 1, padding: "10px 6px", borderRadius: 999, border: "none",
+                  background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
+                  fontFamily: "inherit", fontSize: 12, fontWeight: 700,
+                  letterSpacing: 0.5, textTransform: "uppercase",
+                  cursor: creating ? "not-allowed" : "pointer", transition: "background .15s",
+                  opacity: creating ? 0.6 : 1 }}>{label}</button>
+            );
+          })}
+        </div>
+        <div style={{ fontSize: 11, color: C.inkMute, marginTop: 6, fontWeight: 500 }}>
+          {(versusPrefs.victoryCondition || "hybrid") === "time" ? "Le plus rapide gagne · Indices · Étapes" : "Moins d'étapes gagne · Indices · Temps"}
+        </div>
       </div>
 
       {/* Options avancées (collapsible) */}
@@ -4521,7 +4631,7 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
     try {
       // En v5.12, les défis se modifient via le système de proposition (boutons 🔄).
       // Le "Démarrer" ne fait plus que basculer en status=playing avec les films verrouillés.
-      await startMatch(match.id);
+      await startMatch(match.id, versusPrefs?.victoryCondition || "hybrid");
     } catch (e) {
       console.error(e);
       setError(e.message || "Erreur au lancement.");
@@ -4811,6 +4921,24 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
                       letterSpacing: 0.4, textTransform: "uppercase",
                       cursor: starting ? "not-allowed" : "pointer",
                       opacity: starting ? 0.6 : 1 }}>{d.label}</button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 8 }}>Condition de victoire</div>
+            <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
+              {[{ key: "hybrid", label: "Étapes" }, { key: "time", label: "Temps" }].map(({ key, label }) => {
+                const active = (versusPrefs.victoryCondition || "hybrid") === key;
+                return (
+                  <button key={key} onClick={() => setVersusPrefs(p => ({ ...p, victoryCondition: key }))} disabled={starting}
+                    style={{ flex: 1, padding: "9px 6px", borderRadius: 999, border: "none",
+                      background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
+                      fontFamily: "inherit", fontSize: 11, fontWeight: 700,
+                      letterSpacing: 0.5, textTransform: "uppercase",
+                      cursor: starting ? "not-allowed" : "pointer",
+                      opacity: starting ? 0.6 : 1 }}>{label}</button>
                 );
               })}
             </div>
