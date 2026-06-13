@@ -135,6 +135,9 @@ const LS_SOLO_MEDIUM    = "fil-solo-medium";
 const LS_SOLO_HARD      = "fil-solo-hard";
 const LS_SOLO_OPTIMAL   = "fil-solo-optimal";
 const LS_VERSUS_OPTIMAL = "fil-versus-optimal";
+const LS_SOLO_ABANDONS  = "fil-solo-abandons";
+const LS_SOLO_HINTS     = "fil-solo-hints";
+const LS_VERSUS_HINTS   = "fil-versus-hints";
 
 function loadPrefs() {
   try {
@@ -171,6 +174,12 @@ function loadSoloOptimal()    { try { return parseInt(localStorage.getItem(LS_SO
 function loadVersusOptimal()  { try { return parseInt(localStorage.getItem(LS_VERSUS_OPTIMAL) || "0", 10); } catch { return 0; } }
 function incSoloOptimal()     { try { localStorage.setItem(LS_SOLO_OPTIMAL,   String(loadSoloOptimal()   + 1)); } catch {} }
 function incVersusOptimal()   { try { localStorage.setItem(LS_VERSUS_OPTIMAL, String(loadVersusOptimal() + 1)); } catch {} }
+function loadSoloAbandons()   { try { return parseInt(localStorage.getItem(LS_SOLO_ABANDONS) || "0", 10); } catch { return 0; } }
+function incSoloAbandons()    { try { localStorage.setItem(LS_SOLO_ABANDONS, String(loadSoloAbandons() + 1)); } catch {} }
+function loadSoloHints()      { try { return parseInt(localStorage.getItem(LS_SOLO_HINTS)    || "0", 10); } catch { return 0; } }
+function loadVersusHints()    { try { return parseInt(localStorage.getItem(LS_VERSUS_HINTS)  || "0", 10); } catch { return 0; } }
+function addSoloHints(n)      { try { localStorage.setItem(LS_SOLO_HINTS,    String(loadSoloHints()    + (n || 0))); } catch {} }
+function addVersusHints(n)    { try { localStorage.setItem(LS_VERSUS_HINTS,  String(loadVersusHints()  + (n || 0))); } catch {} }
 
 function saveUserPreset(prefs) {
   try { localStorage.setItem(LS_USER_PRESET, JSON.stringify(prefs)); return true; }
@@ -2305,6 +2314,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
         const optSteps = challenge.optimal?.length > 0
           ? Math.max(0, Math.floor((challenge.optimal.length - 1) / 2)) : null;
         if (optSteps !== null && finalSteps <= optSteps) incSoloOptimal();
+        addSoloHints(hintsUsed);
       }
     }
   }, [isAtEnd, finished, onFinished, isVersus, versusContext, path.length, startTime, hintsUsed]);
@@ -2435,6 +2445,9 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
       finishPlayer(versusContext.myPlayerId, {
         finalSteps, finalTimeMs, abandoned: true, hintsUsed,
       }).catch(() => {});
+    } else {
+      incSoloAbandons();
+      addSoloHints(hintsUsed);
     }
   }
 
@@ -3264,6 +3277,7 @@ function VersusEndScreen({
     if (iWon) incrementVersusWins();
     else if (iLost) incrementVersusLosses();
     if (!myAbandoned && optimalSteps !== null && mySteps <= optimalSteps) incVersusOptimal();
+    addVersusHints(myHintsUsed);
   }, [bothDone]);
 
   // Hydrate le chemin de l'adversaire quand il a fini
@@ -4938,9 +4952,12 @@ function AccountScreen({ onBack, themeColors, glass, glassDark, gamesPlayed }) {
   const soloMedium     = loadSoloDiff("medium");
   const soloHard       = loadSoloDiff("hard");
   const soloOptimal    = loadSoloOptimal();
+  const soloAbandons   = loadSoloAbandons();
+  const soloHints      = loadSoloHints();
   const versusWins     = loadVersusWins();
   const versusLosses   = loadVersusLosses();
   const versusOptimal  = loadVersusOptimal();
+  const versusHints    = loadVersusHints();
 
   function startEdit() {
     setNameInput(playerName);
@@ -5024,9 +5041,17 @@ function AccountScreen({ onBack, themeColors, glass, glassDark, gamesPlayed }) {
           <span style={statLabel}>Meilleur score</span>
           <span style={statValue}>{bestSteps ? `${bestSteps} étape${bestSteps > 1 ? "s" : ""}` : "—"}</span>
         </div>
-        <div style={{ ...statRow, borderBottom: "none" }}>
+        <div style={statRow}>
           <span style={statLabel}>Chemin optimal</span>
           <span style={statValue}>{soloOptimal} fois</span>
+        </div>
+        <div style={statRow}>
+          <span style={statLabel}>Abandons</span>
+          <span style={{ ...statValue, color: C.amber }}>{soloAbandons}</span>
+        </div>
+        <div style={{ ...statRow, borderBottom: "none" }}>
+          <span style={statLabel}>Indices utilisés</span>
+          <span style={statValue}>{soloHints}</span>
         </div>
       </div>
 
@@ -5041,9 +5066,13 @@ function AccountScreen({ onBack, themeColors, glass, glassDark, gamesPlayed }) {
           <span style={statLabel}>Défaites</span>
           <span style={{ ...statValue, color: C.amber }}>{versusLosses}</span>
         </div>
-        <div style={{ ...statRow, borderBottom: "none" }}>
+        <div style={statRow}>
           <span style={statLabel}>Chemin optimal</span>
           <span style={statValue}>{versusOptimal} fois</span>
+        </div>
+        <div style={{ ...statRow, borderBottom: "none" }}>
+          <span style={statLabel}>Indices utilisés</span>
+          <span style={statValue}>{versusHints}</span>
         </div>
       </div>
 
