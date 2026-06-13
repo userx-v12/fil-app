@@ -125,8 +125,11 @@ const LS_THEME = "fil-theme";
 const LS_GAMES_PLAYED = "fil-games-played";
 const LS_INFO_SEEN = "fil-info-seen";
 const LS_USER_PRESET = "fil-user-preset";  // Snapshot des prefs sauvegardé par le user
-const LS_PLAYER_TOKEN = "fil-player-token"; // Identifiant unique du joueur (anonyme, persistant)
-const LS_PLAYER_NAME  = "fil-player-name";  // Pseudo réutilisé entre les parties Versus
+const LS_PLAYER_TOKEN  = "fil-player-token"; // Identifiant unique du joueur (anonyme, persistant)
+const LS_PLAYER_NAME   = "fil-player-name";  // Pseudo réutilisé entre les parties Versus
+const LS_BEST_STEPS    = "fil-best-steps";   // Meilleur score solo (min étapes)
+const LS_VERSUS_WINS   = "fil-versus-wins";
+const LS_VERSUS_LOSSES = "fil-versus-losses";
 
 function loadPrefs() {
   try {
@@ -151,6 +154,12 @@ function incrementGamesPlayed() {
 }
 function loadInfoSeen() { try { return localStorage.getItem(LS_INFO_SEEN) === "1"; } catch { return false; } }
 function markInfoSeen() { try { localStorage.setItem(LS_INFO_SEEN, "1"); } catch {} }
+function loadBestSteps()    { try { return parseInt(localStorage.getItem(LS_BEST_STEPS) || "0", 10); } catch { return 0; } }
+function saveBestSteps(s)   { try { const c = loadBestSteps(); if (!c || s < c) localStorage.setItem(LS_BEST_STEPS, String(s)); } catch {} }
+function loadVersusWins()   { try { return parseInt(localStorage.getItem(LS_VERSUS_WINS)   || "0", 10); } catch { return 0; } }
+function loadVersusLosses() { try { return parseInt(localStorage.getItem(LS_VERSUS_LOSSES) || "0", 10); } catch { return 0; } }
+function incrementVersusWins()   { try { const c = loadVersusWins()   + 1; localStorage.setItem(LS_VERSUS_WINS,   String(c)); } catch {} }
+function incrementVersusLosses() { try { const c = loadVersusLosses() + 1; localStorage.setItem(LS_VERSUS_LOSSES, String(c)); } catch {} }
 
 function saveUserPreset(prefs) {
   try { localStorage.setItem(LS_USER_PRESET, JSON.stringify(prefs)); return true; }
@@ -1699,7 +1708,7 @@ export default function App() {
                                 themeColors={C} glass={glass} glassDark={glassDark} />}
       {screen === "options" && <OptionsScreen onBack={() => setScreen("menu")} prefs={prefs} setPrefs={setPrefs}
                                 themeColors={C} glass={glass} />}
-      {screen === "account" && <AccountScreen onBack={() => setScreen("menu")} themeColors={C} glass={glass}
+      {screen === "account" && <AccountScreen onBack={() => setScreen("menu")} themeColors={C} glass={glass} glassDark={glassDark}
                                   gamesPlayed={gamesPlayed} />}
     </Background>
   );
@@ -2276,6 +2285,8 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
         finishPlayer(versusContext.myPlayerId, {
           finalSteps, finalTimeMs, abandoned: false, hintsUsed,
         }).catch(() => {});
+      } else {
+        saveBestSteps(Math.max(0, Math.floor((path.length - 1) / 2)));
       }
     }
   }, [isAtEnd, finished, onFinished, isVersus, versusContext, path.length, startTime, hintsUsed]);
@@ -3217,6 +3228,24 @@ function VersusEndScreen({
   const [opponentPath, setOpponentPath] = useState(null);
   const [rematchCode, setRematchCode] = useState(null);
   const [requestingRematch, setRequestingRematch] = useState(false);
+  const statsTrackedRef = useRef(false);
+
+  // Enregistre victoire/défaite en localStorage une seule fois quand bothDone
+  useEffect(() => {
+    if (!bothDone || statsTrackedRef.current) return;
+    statsTrackedRef.current = true;
+    const iWon = !myAbandoned && (
+      opponentAbandoned ||
+      mySteps < (opponentFinalSteps ?? Infinity) ||
+      (mySteps === (opponentFinalSteps ?? Infinity) && myTimeMs < (opponentFinalTimeMs ?? Infinity))
+    );
+    const iLost = myAbandoned || (!myAbandoned && !opponentAbandoned && (
+      mySteps > (opponentFinalSteps ?? 0) ||
+      (mySteps === (opponentFinalSteps ?? 0) && myTimeMs > (opponentFinalTimeMs ?? 0))
+    ));
+    if (iWon) incrementVersusWins();
+    else if (iLost) incrementVersusLosses();
+  }, [bothDone]);
 
   // Hydrate le chemin de l'adversaire quand il a fini
   useEffect(() => {
@@ -4878,23 +4907,104 @@ function PlayerRow({ slot, name, isMe, themeColors }) {
   );
 }
 
-function AccountScreen({ onBack, themeColors, glass, gamesPlayed }) {
+function AccountScreen({ onBack, themeColors, glass, glassDark, gamesPlayed }) {
   const C = themeColors;
+  const [playerName, setPlayerName] = useState(loadPlayerName);
+  const [editing, setEditing] = useState(false);
+  const [nameInput, setNameInput] = useState("");
+  const inputRef = useRef(null);
+
+  const bestSteps    = loadBestSteps();
+  const versusWins   = loadVersusWins();
+  const versusLosses = loadVersusLosses();
+
+  function startEdit() {
+    setNameInput(playerName);
+    setEditing(true);
+    setTimeout(() => inputRef.current?.focus(), 50);
+  }
+  function confirmEdit() {
+    const n = nameInput.trim();
+    if (n) { savePlayerName(n); setPlayerName(n); }
+    setEditing(false);
+  }
+  function handleKeyDown(e) {
+    if (e.key === "Enter") confirmEdit();
+    if (e.key === "Escape") setEditing(false);
+  }
+
+  const sectionLabel = { fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, marginBottom: 14, fontWeight: 600 };
+  const statRow = { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${C.hairline}` };
+  const statLabel = { fontSize: 13, color: C.inkSoft, fontWeight: 500 };
+  const statValue = { fontSize: 16, fontWeight: 800, color: C.ink, letterSpacing: -0.5 };
+
   return (
-    <div style={{ minHeight: "100vh", padding: "70px 20px 20px", maxWidth: 480, margin: "0 auto" }}>
-      <header style={{ display: "flex", alignItems: "center", marginBottom: 48 }}>
+    <div style={{ minHeight: "100vh", padding: "70px 20px 40px", maxWidth: 480, margin: "0 auto" }}>
+      <header style={{ display: "flex", alignItems: "center", marginBottom: 32 }}>
         <button onClick={onBack} style={{ ...glass, borderRadius: 999, padding: "9px 14px", cursor: "pointer",
           fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: C.ink, fontWeight: 600, border: "none" }}>← Menu</button>
       </header>
-      <div style={{ ...glass, borderRadius: 22, padding: 40, textAlign: "center" }}>
-        <div style={{ display: "flex", justifyContent: "center", marginBottom: 16, opacity: .25 }}><LogoMark size={40} color={C.ink} /></div>
-        <div style={{ fontWeight: 800, fontSize: 28, marginBottom: 8, letterSpacing: -1, color: C.ink }}>Compte</div>
-        <div style={{ fontSize: 13, color: C.inkSoft, lineHeight: 1.5, fontWeight: 500 }}>Profil, stats, historique.</div>
-        <div style={{ marginTop: 32, padding: "20px 0", borderTop: `1px solid ${C.hairline}` }}>
-          <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkMute, marginBottom: 8, fontWeight: 600 }}>Stats locales</div>
-          <div style={{ fontSize: 32, fontWeight: 800, color: C.ink, letterSpacing: -1 }}>{gamesPlayed}</div>
-          <div style={{ fontSize: 12, color: C.inkSoft, fontWeight: 500 }}>{gamesPlayed > 1 ? "parties jouées" : "partie jouée"}</div>
+
+      {/* Pseudo */}
+      <div style={{ ...glass, borderRadius: 22, padding: 20, marginBottom: 16 }}>
+        <div style={sectionLabel}>Pseudo Versus</div>
+        {editing ? (
+          <div style={{ display: "flex", gap: 8 }}>
+            <input ref={inputRef} value={nameInput} onChange={e => setNameInput(e.target.value)}
+              onKeyDown={handleKeyDown} maxLength={20}
+              style={{ flex: 1, background: "transparent", border: `1px solid ${C.hairline}`,
+                borderRadius: 10, padding: "10px 14px", fontFamily: "inherit",
+                fontSize: 15, fontWeight: 700, color: C.ink, outline: "none" }} />
+            <button onClick={confirmEdit}
+              style={{ ...glassDark, borderRadius: 10, padding: "10px 16px", border: "none",
+                fontFamily: "inherit", fontSize: 11, letterSpacing: 1, textTransform: "uppercase",
+                fontWeight: 700, cursor: "pointer", color: C.glassDarkInk, whiteSpace: "nowrap" }}>
+              Enregistrer
+            </button>
+          </div>
+        ) : (
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ fontSize: 20, fontWeight: 800, color: C.ink, letterSpacing: -0.5 }}>
+              {playerName || <span style={{ color: C.inkMute, fontWeight: 500, fontSize: 14 }}>Pas encore défini</span>}
+            </div>
+            <button onClick={startEdit}
+              style={{ background: "transparent", border: `1px solid ${C.hairline}`, borderRadius: 999,
+                padding: "7px 14px", fontFamily: "inherit", fontSize: 10, letterSpacing: 1.2,
+                textTransform: "uppercase", fontWeight: 700, color: C.inkSoft, cursor: "pointer" }}>
+              Modifier
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Stats Solo */}
+      <div style={{ ...glass, borderRadius: 22, padding: 20, marginBottom: 16 }}>
+        <div style={sectionLabel}>Solo</div>
+        <div style={{ ...statRow, borderTop: `1px solid ${C.hairline}` }}>
+          <span style={statLabel}>Parties jouées</span>
+          <span style={statValue}>{gamesPlayed}</span>
         </div>
+        <div style={{ ...statRow, borderBottom: "none" }}>
+          <span style={statLabel}>Meilleur score</span>
+          <span style={statValue}>{bestSteps ? `${bestSteps} étape${bestSteps > 1 ? "s" : ""}` : "—"}</span>
+        </div>
+      </div>
+
+      {/* Stats Versus */}
+      <div style={{ ...glass, borderRadius: 22, padding: 20, marginBottom: 16 }}>
+        <div style={sectionLabel}>Versus</div>
+        <div style={{ ...statRow, borderTop: `1px solid ${C.hairline}` }}>
+          <span style={statLabel}>Victoires</span>
+          <span style={{ ...statValue, color: C.green }}>{versusWins}</span>
+        </div>
+        <div style={{ ...statRow, borderBottom: "none" }}>
+          <span style={statLabel}>Défaites</span>
+          <span style={{ ...statValue, color: C.amber }}>{versusLosses}</span>
+        </div>
+      </div>
+
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 2, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>
+        Stats enregistrées sur cet appareil · Comptes bientôt disponibles
       </div>
     </div>
   );
