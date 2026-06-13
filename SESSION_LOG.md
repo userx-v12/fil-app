@@ -28,43 +28,48 @@ Lis CLAUDE.md et SESSION_LOG.md. Dis-moi en 3 lignes où on en est et ce qu'on a
 
 ---
 
-## Session du 2026-06-14 — v5.19 (suite)
+## Session du 2026-06-14 — v5.19 (fin de session)
 
 ### Ce qu'on a fait
 
-**3 corrections UI autonomes**
+**3 corrections UI (tâche autonome)**
 
-1. **Barre d'actions en bas (pendant les parties)**
-   - Problème : fond semi-transparent (`glassBg` = rgba ~65%) → le contenu défilait en transparence derrière
-   - Fix : fond quasi-opaque `rgba(250,250,250,0.97)` (light) / `rgba(10,14,24,0.97)` (dark) + `backdropFilter` conservé
-   - Ajout `transform: translateZ(0)` → force un GPU layer, corrige le scroll iOS Safari sur `position: fixed`
-   - `src/App.jsx` l.~2686
+1. **Barre d'actions en bas pendant les parties** (`src/App.jsx` l.~2686)
+   - Fond quasi-opaque : `rgba(250,250,250,0.97)` light / `rgba(10,14,24,0.97)` dark — remplace `...glass` semi-transparent
+   - `backdropFilter: blur(20px) saturate(140%)` conservé
+   - `transform: translateZ(0)` ajouté → GPU layer, corrige le bug `position: fixed` qui scrollait avec la page sur iOS Safari
 
-2. **Stabilité du titre Filmographie / Casting au toggle tri**
-   - Problème : "Trier · Popularité" plus large que "Trier · Rôle" / "Trier · Date" → le titre se décale à gauche au clic
-   - Fix : `minWidth: 95` sur le wrapper `div` du bouton de tri (ActorPicker + MoviePicker)
-   - `src/App.jsx` l.~2906 (ActorPicker) et l.~3013 (MoviePicker)
+2. **Stabilité du titre Filmographie / Casting** (`src/App.jsx` l.~2906 ActorPicker, l.~3013 MoviePicker)
+   - "Trier · Popularité" est plus large que "Trier · Rôle" / "Trier · Date" → le titre dérivait à gauche au clic
+   - Fix : `minWidth: 95` sur le `div` wrapper du bouton de tri dans les deux pickers
 
-3. **Taille des images acteurs et affiches**
-   - Acteurs : `ActorPhoto size` 56 → 68px (grille 3 colonnes)
-   - Affiches : `Poster size` 42 → 52px (liste filmographie), `rounded` 7 → 8
-   - `src/App.jsx` l.~2947 et l.~3058
+3. **Taille des images** (`src/App.jsx` l.~2947 et l.~3058)
+   - `ActorPhoto` : 56 → 68px (grille 3 colonnes dans ActorPicker)
+   - `Poster` : 42 → 52px, `rounded` 7 → 8 (liste dans MoviePicker)
+
+**Version bump**
+- Numéro v5.18 → v5.19 dans le menu (`src/App.jsx` l.~1920)
 
 ### Bugs corrigés
-Aucun bug — corrections UI uniquement.
+Aucun — corrections UI et polish uniquement.
 
 ### État actuel du code
-- Version affichée : v5.18 (inchangée — pas de changement fonctionnel)
+- **Version affichée : v5.19**
+- Commits : `a61a50b` (UI fixes), `46e29df` (version bump), pushés sur `main`
+- Vercel auto-deploy déclenché
 - Fichier modifié : `src/App.jsx` uniquement
 
 ### Ce qui reste à faire (backlog v5.20+)
-1. Supabase Auth (priorité haute)
-2. `character_name` dans `credits`
-3. `original_title` dans `works`
+1. Supabase Auth — comptes réels, stats cross-device (priorité haute, projet 1-2 jours)
+2. `character_name` dans `credits` — nom du personnage joué dans le casting
+3. `original_title` dans `works` — recherche cross-langue
 4. Phase 6 : App iOS via Capacitor
 
 ### Pièges à éviter
-- Ne pas repasser à `...glass` pour la barre du bas — le fond semi-transparent laisse voir le contenu qui défile derrière. Utiliser explicitement les rgba opaques.
+- **Barre du bas** : NE PAS repasser à `...glass`. Le `glassBg` est rgba 55-65%, le contenu défile visible derrière. Toujours utiliser les rgba opaques explicites `(250,250,250,0.97)` light / `(10,14,24,0.97)` dark.
+- **Mode personnalisé Versus** : `pending_change` est réutilisé pour stocker `{ custom_end_id, custom_end_type, invitee_ready: true }` — mutuellement exclusif avec le système de proposition normal. Ne pas mélanger les deux.
+- **`startMatch`** a 3 params : `(matchId, victoryCondition, customEnd)`. Ne pas oublier `customEnd` si on retouche cette fonction.
+- **Condition de victoire** : le mode "Étapes" est stocké `hybrid` en DB, le mode "Temps" est `time`. Ne pas renommer en DB.
 
 ---
 
