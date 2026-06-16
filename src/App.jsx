@@ -1882,7 +1882,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.22</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.23</div>
     </div>
   );
 }
@@ -2241,6 +2241,13 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
   const [opponentHintsUsed, setOpponentHintsUsed] = useState(0);
   const [opponentDisconnectedAt, setOpponentDisconnectedAt] = useState(null);
   const [opponentLivePath, setOpponentLivePath] = useState(null);
+  // Une fois les 2 manches vraiment conclues, on gèle l'écoute de l'adversaire : la revanche
+  // (resetMatchPlayersForNewRound) remet finished=false en DB, ce qui casserait bothDone côté
+  // écran de fin si on continuait à appliquer les updates en direct.
+  const bothDoneAchievedRef = useRef(false);
+  useEffect(() => {
+    if (finished && opponentFinished) bothDoneAchievedRef.current = true;
+  }, [finished, opponentFinished]);
 
   const currentMovie = path[path.length - 1].data;
   const isAtEnd = currentMovie.id === challenge.end.id && currentMovie.type === challenge.end.type;
@@ -2292,6 +2299,9 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
         event: "*", schema: "public", table: "match_players",
         filter: `match_id=eq.${versusContext.matchId}`,
       }, (payload) => {
+        // Une fois les 2 manches conclues, on ignore les updates suivants : ils ne peuvent venir
+        // que du reset "revanche" (resetMatchPlayersForNewRound) et casseraient bothDone côté écran de fin.
+        if (bothDoneAchievedRef.current) return;
         const p = payload.new || payload.old;
         if (!p || p.id === versusContext.myPlayerId) return;
         if (payload.eventType === "DELETE") return;
@@ -2346,19 +2356,23 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
     }
   }, [elapsed, opponentDisconnectedAt, isVersus, finished]);
 
-  // VERSUS (condition de victoire "Temps") : si l'adversaire finit en premier, son temps est
-  // forcément le meilleur (le mien ne peut que continuer à augmenter) → on s'arrête tout de suite,
-  // inutile de continuer à jouer pour un résultat déjà perdu.
+  // VERSUS (condition de victoire "Temps") : en mode Temps, les indices passent avant le temps.
+  // Si l'adversaire finit en premier sans avoir utilisé d'indice, rien ne peut nous sauver (son temps
+  // ne peut qu'être meilleur que le nôtre, et on ne peut pas faire moins de 0 indice) → arrêt immédiat.
+  // S'il a utilisé au moins un indice, on continue à jouer : on a une chance de gagner sur les indices.
+  // On s'arrête seulement quand on atteint (ou dépasse) son nombre d'indices, puisqu'à ce moment le
+  // temps décide et le sien est déjà meilleur.
   useEffect(() => {
     if (!isVersus || finished) return;
     if ((versusContext.victoryCondition || "hybrid") !== "time") return;
     if (!opponentFinished || opponentAbandoned) return;
+    if (hintsUsed < opponentHintsUsed) return;
     const finalSteps = Math.max(0, Math.floor((path.length - 1) / 2));
     const finalTimeMs = Date.now() - startTime;
     setFinished(true);
     onFinished?.();
     finishPlayer(versusContext.myPlayerId, { finalSteps, finalTimeMs, abandoned: false, hintsUsed }).catch(() => {});
-  }, [isVersus, finished, opponentFinished, opponentAbandoned, versusContext, hintsUsed, path.length, startTime]);
+  }, [isVersus, finished, opponentFinished, opponentAbandoned, opponentHintsUsed, versusContext, hintsUsed, path.length, startTime]);
 
   useEffect(() => {
     if (finished) return;
@@ -3481,17 +3495,17 @@ function VersusEndScreen({
     } else if (opponentAbandoned) {
       verdict = "Tu gagnes par abandon"; verdictColor = C.green;
     } else if (victoryCondition === "time") {
-      // Mode Temps : temps d'abord, puis indices, puis étapes
+      // Mode Temps : indices d'abord (un indice est une pénalité), puis temps, puis étapes
       const oppTime = opponentFinalTimeMs ?? Infinity;
       const oppSteps = opponentFinalSteps ?? Infinity;
-      if (myTimeMs < oppTime) {
-        verdict = "🏆 Tu gagnes (plus rapide)"; verdictColor = C.green;
-      } else if (myTimeMs > oppTime) {
-        verdict = `${opponentName} gagne (plus rapide)`; verdictColor = C.amber;
-      } else if (myHintsUsed < opponentHintsUsed) {
+      if (myHintsUsed < opponentHintsUsed) {
         verdict = "🏆 Tu gagnes (moins d'indices)"; verdictColor = C.green;
       } else if (myHintsUsed > opponentHintsUsed) {
         verdict = `${opponentName} gagne (moins d'indices)`; verdictColor = C.amber;
+      } else if (myTimeMs < oppTime) {
+        verdict = "🏆 Tu gagnes (plus rapide)"; verdictColor = C.green;
+      } else if (myTimeMs > oppTime) {
+        verdict = `${opponentName} gagne (plus rapide)`; verdictColor = C.amber;
       } else if (mySteps < oppSteps) {
         verdict = "🏆 Tu gagnes (moins d'étapes)"; verdictColor = C.green;
       } else if (mySteps > oppSteps) {
@@ -3575,7 +3589,7 @@ function VersusEndScreen({
                 opponentAbandoned || (() => {
                   const os = opponentFinalSteps ?? Infinity, ot = opponentFinalTimeMs ?? Infinity;
                   if (victoryCondition === "time") {
-                    return myTimeMs < ot || (myTimeMs === ot && myHintsUsed < opponentHintsUsed) || (myTimeMs === ot && myHintsUsed === opponentHintsUsed && mySteps < os);
+                    return myHintsUsed < opponentHintsUsed || (myHintsUsed === opponentHintsUsed && myTimeMs < ot) || (myHintsUsed === opponentHintsUsed && myTimeMs === ot && mySteps < os);
                   }
                   return mySteps < os || (mySteps === os && myHintsUsed < opponentHintsUsed) || (mySteps === os && myHintsUsed === opponentHintsUsed && myTimeMs < ot);
                 })()
@@ -3590,7 +3604,7 @@ function VersusEndScreen({
               winner={!opponentAbandoned && !myAbandoned && (() => {
                 const os = opponentFinalSteps ?? Infinity, ot = opponentFinalTimeMs ?? Infinity;
                 if (victoryCondition === "time") {
-                  return ot < myTimeMs || (ot === myTimeMs && opponentHintsUsed < myHintsUsed) || (ot === myTimeMs && opponentHintsUsed === myHintsUsed && os < mySteps);
+                  return opponentHintsUsed < myHintsUsed || (opponentHintsUsed === myHintsUsed && ot < myTimeMs) || (opponentHintsUsed === myHintsUsed && ot === myTimeMs && os < mySteps);
                 }
                 return os < mySteps || (os === mySteps && opponentHintsUsed < myHintsUsed) || (os === mySteps && opponentHintsUsed === myHintsUsed && ot < myTimeMs);
               })()}
