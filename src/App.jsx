@@ -592,6 +592,8 @@ async function joinMatch(matchId, playerName, slot) {
   return data;
 }
 
+// Claim atomique : ne démarre que si le match est encore "waiting" (évite un double-start
+// si les 2 clients détectent la condition de lancement au même moment).
 async function startMatch(matchId, victoryCondition = "hybrid", customStart = null, customEnd = null) {
   const update = { status: "playing", started_at: new Date().toISOString(), victory_condition: victoryCondition, pending_change: null };
   if (customStart) { update.start_id = customStart.id; update.start_type = customStart.type; }
@@ -600,18 +602,44 @@ async function startMatch(matchId, victoryCondition = "hybrid", customStart = nu
     .from("matches")
     .update(update)
     .eq("id", matchId)
-    .select()
-    .single();
+    .eq("status", "waiting")
+    .select();
   if (error) throw error;
-  return data;
+  return (data && data[0]) || null;
 }
 
 // Récupère une œuvre quelconque pour servir de placeholder start/end tant que les joueurs
-// n'ont pas encore choisi leurs films en mode personnalisé.
+// n'ont pas encore choisi leurs films en mode sur-mesure, ou tant qu'aucun défi n'a été tiré
+// en mode standard ("salon vierge").
 async function getPlaceholderWork() {
   const { data, error } = await supabase.from("works").select("id, type").limit(1).single();
   if (error) throw error;
   return data;
+}
+
+// Remet le défi d'un match à l'état "vierge" (placeholder start===end, pending_change vidé).
+// customModeOverride optionnel : si fourni, bascule aussi le type de partie (Standard/Sur-mesure).
+async function resetMatchDefi(matchId, customModeOverride) {
+  const placeholder = await getPlaceholderWork();
+  const update = {
+    start_id: placeholder.id, start_type: placeholder.type,
+    end_id: placeholder.id, end_type: placeholder.type,
+    optimal_steps: 0,
+    pending_change: null,
+  };
+  if (customModeOverride !== undefined) update.custom_mode = customModeOverride;
+  const { error } = await supabase.from("matches").update(update).eq("id", matchId);
+  if (error) throw error;
+}
+
+async function setMatchVictoryCondition(matchId, victoryCondition) {
+  const { error } = await supabase.from("matches").update({ victory_condition: victoryCondition }).eq("id", matchId);
+  if (error) throw error;
+}
+
+async function updatePlayerName(matchPlayerId, name) {
+  const { error } = await supabase.from("match_players").update({ player_name: name }).eq("id", matchPlayerId);
+  if (error) throw error;
 }
 
 // Mode personnalisé : enregistre le choix de film d'un joueur (départ ou arrivée selon son rôle tiré au hasard)
@@ -703,50 +731,29 @@ async function generateNewDefi({ currentStart, currentEnd, target, versusPrefs }
   return { start: chosen.start, end: chosen.end, optimalSteps: chosen.steps, difficulty: targetDiff };
 }
 
-// Propose un changement de défi à l'autre joueur via pending_change JSONB
-async function proposeMatchChange(matchId, { proposedBySlot, target, newStart, newEnd, optimalSteps, difficulty }) {
-  // On stocke des versions allégées des œuvres pour pouvoir les afficher chez l'autre sans nouveau fetch
-  const lightWork = (w) => ({
-    id: w.id, type: w.type, title: w.title, year: w.year,
-    poster_path: w.poster_path,
-  });
-  const payload = {
-    proposed_by_slot: proposedBySlot,
-    target,
-    new_start: lightWork(newStart),
-    new_end: lightWork(newEnd),
-    optimal_steps: optimalSteps,
-    difficulty,
-    timestamp: new Date().toISOString(),
-  };
-  const { error } = await supabase
-    .from("matches")
-    .update({ pending_change: payload })
-    .eq("id", matchId);
-  if (error) throw error;
-  return payload;
-}
-
-// Applique une proposition acceptée (UPDATE start/end + clear pending_change atomiquement)
-async function acceptPendingChange(matchId, pendingChange) {
+// Applique directement un nouveau défi (départ/arrivée/les deux) — n'importe quel joueur peut
+// le faire à tout moment, ça remet les 2 "OK pour moi" à zéro (pending_change vidé).
+async function applyNewDefi(matchId, { start, end, optimalSteps, difficulty }) {
   const { error } = await supabase
     .from("matches")
     .update({
-      start_id: pendingChange.new_start.id, start_type: pendingChange.new_start.type,
-      end_id: pendingChange.new_end.id,     end_type: pendingChange.new_end.type,
-      optimal_steps: pendingChange.optimal_steps,
-      difficulty: pendingChange.difficulty,
+      start_id: start.id, start_type: start.type,
+      end_id: end.id, end_type: end.type,
+      optimal_steps: optimalSteps,
+      difficulty,
       pending_change: null,
     })
     .eq("id", matchId);
   if (error) throw error;
 }
 
-// Annule / refuse une proposition (clear simple)
-async function clearPendingChange(matchId) {
+// Bascule mon "OK pour moi" sur le défi en cours (mode standard) — togglable librement.
+async function setReadySlot(matchId, currentPendingChange, mySlot, ready) {
+  const current = (currentPendingChange && currentPendingChange.readySlots) || [];
+  const next = ready ? Array.from(new Set([...current, mySlot])) : current.filter(s => s !== mySlot);
   const { error } = await supabase
     .from("matches")
-    .update({ pending_change: null })
+    .update({ pending_change: next.length ? { readySlots: next } : null })
     .eq("id", matchId);
   if (error) throw error;
 }
@@ -1266,8 +1273,10 @@ export default function App() {
   const [gamesPlayed, setGamesPlayed] = useState(loadGamesPlayed);
   const [showInfo, setShowInfo] = useState(false);
   const [versusCode, setVersusCode] = useState(null); // Code de partie Versus en cours
-  const [versusContext, setVersusContext] = useState(null); // Contexte du jeu Versus { matchId, code, myPlayerId, mySlot, myName, opponentName, opponentPlayerId, customMode }
-  const [versusPrefs, setVersusPrefs] = useState(() => ({ ...DEFAULT_PREFS, victoryCondition: "hybrid", customMode: false })); // Prefs Versus indépendantes des prefs globales, partagées entre Create et Lobby
+  const [versusContext, setVersusContext] = useState(null); // Contexte du jeu Versus { matchId, code, myPlayerId, mySlot, myName, opponentName, opponentPlayerId, victoryCondition }
+  const [versusPrefs, setVersusPrefs] = useState(() => ({ ...DEFAULT_PREFS })); // Prefs Versus indépendantes des prefs globales, partagées avec le Lobby (Mode/Difficulté/filtres avancés uniquement, le reste vit en DB)
+  // Série de victoires consécutives en cours, en mémoire (pas de DB) — reset si on quitte le Versus
+  const [versusStreak, setVersusStreak] = useState({ winner: null, count: 0 });
   const [installPrompt, setInstallPrompt] = useState(null);  // Android : event beforeinstallprompt
   const [installType, setInstallType] = useState(null);      // null | "android" | "ios"
   const [showInstallPopup, setShowInstallPopup] = useState(false);
@@ -1547,7 +1556,6 @@ export default function App() {
         opponentName: opp?.player_name || "Adversaire",
         opponentPlayerId: opp?.id || null,
         victoryCondition: match.victory_condition || "hybrid",
-        customMode: !!match.custom_mode,
       });
       setGameKey(k => k + 1);
       setScreen("game");
@@ -1559,17 +1567,56 @@ export default function App() {
     }
   }
 
+  // Crée un salon Versus vierge (pas de défi choisi) et y entre direct en tant que créateur (slot 1).
+  // Le pseudo, le type de partie, le mode/difficulté et la condition de victoire se règlent ensuite dans le lobby.
+  async function handleCreateVersusRoom() {
+    setLoadingChallenge(true);
+    setLoadingLabel("Création du salon…");
+    setError(null);
+    try {
+      setVersusPrefs({ ...prefs });
+      const placeholder = await getPlaceholderWork();
+      const match = await createMatch({
+        startWork: placeholder, endWork: placeholder,
+        optimalSteps: 0, difficulty: "easy",
+        victoryCondition: "hybrid", customMode: false,
+      });
+      const name = getStoredPlayerName() || "Joueur";
+      await joinMatch(match.id, name, 1);
+      setVersusCode(match.code);
+      setVersusInURL(match.code);
+      setScreen("versus-lobby");
+    } catch (e) {
+      console.error(e);
+      setError(e.message || "Erreur lors de la création du salon.");
+    } finally {
+      setLoadingChallenge(false);
+    }
+  }
+
   function exitVersus() {
     clearVersusFromURL();
     setVersusCode(null);
     setVersusContext(null);
     setChallenge(null);
+    setVersusStreak({ winner: null, count: 0 });
     setScreen("menu");
   }
 
-  // Lance une revanche : reset en place du même match (même code, même salon).
-  // Revanche bilatérale : n'importe quel joueur peut cliquer "Revanche".
-  // Premier qui clique gagne (atomic claim sur status), l'autre rejoint juste le même salon.
+  // Met à jour la série de victoires en cours (mémoire locale, pas de DB) à la fin d'une manche.
+  // result : "me" | "opponent" | null (égalité / double abandon → on casse la série)
+  function handleVersusRoundResult(result) {
+    setVersusStreak(s => {
+      if (!result) return { winner: null, count: 0 };
+      if (s.winner === result) return { winner: result, count: s.count + 1 };
+      return { winner: result, count: 1 };
+    });
+  }
+
+  // Lance une revanche : reset en place du même match (même code, même salon), écran vierge
+  // (pas de défi pré-choisi, à charge des 2 joueurs de décider). Revanche bilatérale :
+  // n'importe quel joueur peut cliquer "Revanche". Premier qui clique gagne (atomic claim
+  // sur status), l'autre rejoint juste le même salon.
   async function requestRematch(previousMatch) {
     setLoadingChallenge(true);
     setLoadingLabel("Préparation de la revanche…");
@@ -1585,48 +1632,17 @@ export default function App() {
         return;
       }
 
-      const isCustom = !!versusContext?.customMode;
-      let resetFields;
-
-      if (isCustom) {
-        // Mode personnalisé : pas de film choisi ici, juste le reset.
-        // Le tirage des rôles départ/arrivée se fait dans le lobby une fois les 2 joueurs prêts.
-        resetFields = { pending_change: null, status: "waiting", started_at: null, finished_at: null };
-      } else {
-        // Mode standard : tire un nouveau couple aléatoire selon les prefs courantes
-        const isRandomMode = prefs.difficulty === "random";
-        let target = prefs.difficulty;
-        if (isRandomMode) target = pickWeightedDifficulty();
-        const targetRange = DIFFICULTIES[target]?.range;
-        const forHard = target === "hard";
-
-        let chosen = null;
-        let lastAttempt = null;
-        for (let attempt = 0; attempt < 10; attempt++) {
-          const { start, end } = await pickRandomPair(prefs, forHard);
-          const optimal = await findOptimalPath(start, end, 5);
-          if (!optimal || optimal.length < 3) continue;
-          const steps = Math.floor((optimal.length - 1) / 2);
-          lastAttempt = { start, end, steps };
-          if (!targetRange || (steps >= targetRange[0] && steps <= targetRange[1])) {
-            chosen = lastAttempt; break;
-          }
-        }
-        if (!chosen) chosen = lastAttempt;
-        if (!chosen) throw new Error("Aucun défi trouvé pour la revanche.");
-
-        resetFields = {
-          start_id: chosen.start.id, start_type: chosen.start.type,
-          end_id: chosen.end.id, end_type: chosen.end.type,
-          optimal_steps: chosen.steps, difficulty: target,
-          pending_change: null, status: "waiting", started_at: null, finished_at: null,
-        };
-      }
+      const placeholder = await getPlaceholderWork();
 
       // 2. Réclame le reset de façon atomique (premier arrivé gagne)
       const { data: claimed } = await supabase
         .from("matches")
-        .update(resetFields)
+        .update({
+          start_id: placeholder.id, start_type: placeholder.type,
+          end_id: placeholder.id, end_type: placeholder.type,
+          optimal_steps: 0,
+          pending_change: null, status: "waiting", started_at: null, finished_at: null,
+        })
         .eq("id", previousMatch.id)
         .eq("status", "finished")
         .select();
@@ -1702,19 +1718,16 @@ export default function App() {
               versusContext={versusContext}
               onStartRematch={requestRematch}
               onJoinRematch={requestRematch}
+              versusStreak={versusStreak}
+              onVersusRoundResult={handleVersusRoundResult}
               themeColors={C} glass={glass} glassDark={glassDark} theme={theme} />
       )}
       {screen === "custom" && <CustomScreen onBack={() => setScreen("menu")} onStart={startCustom}
                                 themeColors={C} glass={glass} glassDark={glassDark} />}
       {screen === "multi" && <VersusScreen
                                 onBack={() => setScreen("menu")}
-                                onCreate={() => { setVersusPrefs({ ...prefs }); setScreen("versus-create"); }}
-                                onJoinManual={() => setScreen("versus-join-manual")}
-                                themeColors={C} glass={glass} glassDark={glassDark} />}
-      {screen === "versus-create" && <VersusCreateScreen
-                                onBack={() => setScreen("multi")}
-                                onCreated={(code) => { setVersusCode(code); setVersusInURL(code); setScreen("versus-lobby"); }}
-                                versusPrefs={versusPrefs} setVersusPrefs={setVersusPrefs}
+                                onCreate={handleCreateVersusRoom}
+                                onJoinManual={() => setScreen("versus-join")}
                                 themeColors={C} glass={glass} glassDark={glassDark} />}
       {screen === "versus-lobby" && versusCode && <VersusLobbyScreen
                                 code={versusCode}
@@ -1722,14 +1735,10 @@ export default function App() {
                                 onStartGame={prepareAndStartVersusGame}
                                 versusPrefs={versusPrefs} setVersusPrefs={setVersusPrefs}
                                 themeColors={C} glass={glass} glassDark={glassDark} />}
-      {screen === "versus-join" && versusCode && <VersusJoinScreen
-                                code={versusCode}
+      {screen === "versus-join" && <VersusJoinScreen
+                                initialCode={versusCode}
                                 onBack={() => { clearVersusFromURL(); setVersusCode(null); setScreen("menu"); }}
-                                onJoined={() => setScreen("versus-lobby")}
-                                themeColors={C} glass={glass} glassDark={glassDark} />}
-      {screen === "versus-join-manual" && <VersusJoinManualScreen
-                                onBack={() => setScreen("multi")}
-                                onCodeReady={(code) => { setVersusCode(code); setVersusInURL(code); setScreen("versus-join"); }}
+                                onJoined={(code) => { setVersusCode(code); setVersusInURL(code); setScreen("versus-lobby"); }}
                                 themeColors={C} glass={glass} glassDark={glassDark} />}
       {screen === "options" && <OptionsScreen onBack={() => setScreen("menu")} prefs={prefs} setPrefs={setPrefs}
                                 themeColors={C} glass={glass} />}
@@ -1861,7 +1870,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.20</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.21</div>
     </div>
   );
 }
@@ -2180,7 +2189,7 @@ function Star({ fill, size, color, emptyColor }) {
 // GAME
 // =========================================================================
 
-function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart, versusContext, onStartRematch, onJoinRematch, themeColors, glass, glassDark, theme }) {
+function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart, versusContext, onStartRematch, onJoinRematch, versusStreak, onVersusRoundResult, themeColors, glass, glassDark, theme }) {
   const C = themeColors;
   const isVersus = !!versusContext;
   const [path, setPath] = useState([{ type: "movie", data: challenge.start }]);
@@ -2324,6 +2333,20 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
       }).catch(() => {});
     }
   }, [elapsed, opponentDisconnectedAt, isVersus, finished]);
+
+  // VERSUS (condition de victoire "Temps") : si l'adversaire finit en premier, son temps est
+  // forcément le meilleur (le mien ne peut que continuer à augmenter) → on s'arrête tout de suite,
+  // inutile de continuer à jouer pour un résultat déjà perdu.
+  useEffect(() => {
+    if (!isVersus || finished) return;
+    if ((versusContext.victoryCondition || "hybrid") !== "time") return;
+    if (!opponentFinished || opponentAbandoned) return;
+    const finalSteps = Math.max(0, Math.floor((path.length - 1) / 2));
+    const finalTimeMs = Date.now() - startTime;
+    setFinished(true);
+    onFinished?.();
+    finishPlayer(versusContext.myPlayerId, { finalSteps, finalTimeMs, abandoned: false, hintsUsed }).catch(() => {});
+  }, [isVersus, finished, opponentFinished, opponentAbandoned, versusContext, hintsUsed, path.length, startTime]);
 
   useEffect(() => {
     if (finished) return;
@@ -2522,6 +2545,8 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
             onExit={onExit}
             onStartRematch={onStartRematch}
             onJoinRematch={onJoinRematch}
+            streak={versusStreak}
+            onRoundResult={onVersusRoundResult}
             themeColors={C} glass={glass} glassDark={glassDark} />
         </GameShell>
       );
@@ -3297,6 +3322,7 @@ function VersusEndScreen({
   optimalSteps, optimalPath,
   startWork, endWork,
   onExit, onStartRematch, onJoinRematch,
+  streak, onRoundResult,
   themeColors, glass, glassDark
 }) {
   const C = themeColors;
@@ -3330,6 +3356,7 @@ function VersusEndScreen({
     else if (iLost) incrementVersusLosses();
     if (!myAbandoned && optimalSteps !== null && mySteps <= optimalSteps) incVersusOptimal();
     addVersusHints(myHintsUsed);
+    onRoundResult?.(iWon ? "me" : iLost ? "opponent" : null);
   }, [bothDone]);
 
   // Hydrate le chemin live de l'adversaire pendant qu'il joue encore
@@ -3515,9 +3542,15 @@ function VersusEndScreen({
 
       {bothDone ? (
         <>
-          <div style={{ fontWeight: 800, fontSize: 32, lineHeight: 1.05, color: verdictColor, marginBottom: 24, letterSpacing: -1.2 }}>
+          <div style={{ fontWeight: 800, fontSize: 32, lineHeight: 1.05, color: verdictColor, marginBottom: streak?.count >= 2 ? 8 : 24, letterSpacing: -1.2 }}>
             {verdict}
           </div>
+
+          {streak?.count >= 2 && (
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.amber, marginBottom: 16, letterSpacing: 0.3 }}>
+              🔥 {streak.winner === "me" ? "Toi" : opponentName} : {streak.count} victoires de suite
+            </div>
+          )}
 
           <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
             <VersusPlayerCard
@@ -4079,376 +4112,38 @@ function VersusFiltersPanel({ versusPrefs, setVersusPrefs, disabled, themeColors
   );
 }
 
-function VersusCreateScreen({ onBack, onCreated, versusPrefs, setVersusPrefs, themeColors, glass, glassDark }) {
+function VersusJoinScreen({ initialCode, onBack, onJoined, themeColors, glass, glassDark }) {
   const C = themeColors;
   const [playerName, setPlayerName] = useState(getStoredPlayerName());
-  const [creating, setCreating] = useState(false);
-  const [statusLabel, setStatusLabel] = useState("");
-  const [errorMsg, setErrorMsg] = useState(null);
-  const [showAdvanced, setShowAdvanced] = useState(false);
-
-  const isCustomMode = !!versusPrefs.customMode;
-
-  async function handleCreate() {
-    const name = playerName.trim();
-    if (!name) { setErrorMsg("Choisis un pseudo."); return; }
-    if (name.length > 20) { setErrorMsg("Pseudo trop long (20 max)."); return; }
-    savePlayerName(name);
-
-    setCreating(true);
-    setErrorMsg(null);
-
-    try {
-      let match;
-      if (isCustomMode) {
-        setStatusLabel("Création de la partie…");
-        // En mode personnalisé, les rôles (départ/arrivée) et les films sont choisis
-        // par les 2 joueurs ensemble dans le lobby. On crée le match avec un placeholder.
-        const placeholder = await getPlaceholderWork();
-        match = await createMatch({
-          startWork: placeholder,
-          endWork: placeholder,
-          optimalSteps: 0,
-          difficulty: "custom",
-          victoryCondition: versusPrefs.victoryCondition || "hybrid",
-          customMode: true,
-        });
-      } else {
-        // Choisit une difficulté cible (même logique que startRandom)
-        const isRandomMode = versusPrefs.difficulty === "random";
-        let target = versusPrefs.difficulty;
-        if (isRandomMode) target = pickWeightedDifficulty();
-        const targetRange = DIFFICULTIES[target]?.range;
-        const targetLabel = DIFFICULTIES[target]?.label || "défi";
-        const forHard = target === "hard";
-
-        setStatusLabel(`Recherche d'un défi ${targetLabel.toLowerCase()}…`);
-
-        // Cherche une paire qui matche la difficulté (10 essais)
-        let chosen = null;
-        let lastAttempt = null;
-        for (let attempt = 0; attempt < 10; attempt++) {
-          const { start, end } = await pickRandomPair(versusPrefs, forHard);
-          const optimal = await findOptimalPath(start, end, 5);
-          if (!optimal || optimal.length < 3) continue;
-          const steps = Math.floor((optimal.length - 1) / 2);
-          lastAttempt = { start, end, steps };
-          if (!targetRange || (steps >= targetRange[0] && steps <= targetRange[1])) {
-            chosen = lastAttempt;
-            break;
-          }
-        }
-        if (!chosen) chosen = lastAttempt;
-        if (!chosen) throw new Error("Aucun défi trouvé. Élargis tes critères.");
-
-        setStatusLabel("Création de la partie…");
-
-        match = await createMatch({
-          startWork: chosen.start,
-          endWork: chosen.end,
-          optimalSteps: chosen.steps,
-          difficulty: target,
-          victoryCondition: versusPrefs.victoryCondition || "hybrid",
-        });
-      }
-
-      // Le créateur rejoint en slot 1
-      await joinMatch(match.id, name, 1);
-
-      onCreated(match.code);
-    } catch (e) {
-      console.error(e);
-      setErrorMsg(e.message || "Erreur lors de la création.");
-      setCreating(false);
-    }
-  }
-
-  const inputStyle = {
-    width: "100%", background: C.cardBg, border: `1px solid ${C.hairline}`,
-    outline: "none", borderRadius: 14, padding: "12px 16px",
-    fontSize: 16, fontFamily: "inherit", color: C.ink, fontWeight: 600,
-  };
-
-  // Indicateur si les options avancées sont actives (différentes des defaults)
-  const hasActiveAdvanced =
-    (versusPrefs.eras?.length || 0) > 0 ||
-    (versusPrefs.minRating || 0) > 0 ||
-    (versusPrefs.languages?.length || 0) !== DEFAULT_PREFS.languages.length ||
-    JSON.stringify((versusPrefs.languages || []).slice().sort()) !== JSON.stringify(DEFAULT_PREFS.languages.slice().sort()) ||
-    (versusPrefs.filterMode || "exclude") !== DEFAULT_PREFS.filterMode ||
-    JSON.stringify((versusPrefs.includeGenres || []).slice().sort()) !== JSON.stringify((DEFAULT_PREFS.includeGenres || []).slice().sort()) ||
-    JSON.stringify((versusPrefs.excludeGenres || []).map(Number).sort()) !== JSON.stringify((DEFAULT_PREFS.excludeGenres || []).map(Number).sort());
-
-  return (
-    <div style={{ minHeight: "100vh", padding: "70px 20px 40px", maxWidth: 480, margin: "0 auto" }}>
-      <header style={{ display: "flex", alignItems: "center", marginBottom: 28 }}>
-        <button onClick={onBack} disabled={creating} style={{ ...glass, borderRadius: 999, padding: "9px 14px", cursor: creating ? "not-allowed" : "pointer",
-          fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: C.ink, fontWeight: 600, border: "none", opacity: creating ? 0.5 : 1 }}>← Retour</button>
-      </header>
-      <div style={{ marginBottom: 28 }}>
-        <div style={{ fontSize: 10, letterSpacing: 4, textTransform: "uppercase", color: C.inkSoft, marginBottom: 10, fontWeight: 600 }}>Versus · Créer</div>
-        <h2 style={{ fontWeight: 800, fontSize: 32, margin: 0, letterSpacing: -1.2, lineHeight: 1, color: C.ink }}>Ton pseudo</h2>
-      </div>
-
-      <div style={{ marginBottom: 22 }}>
-        <input value={playerName} onChange={(e) => setPlayerName(e.target.value)}
-          placeholder="Mathieu, Kévin…" maxLength={20}
-          disabled={creating}
-          style={inputStyle} />
-      </div>
-
-      {/* Toggle Mode personnalisé */}
-      <div style={{ marginBottom: 18 }}>
-        <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 10 }}>Type de partie</div>
-        <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
-          {[{ key: false, label: "Standard" }, { key: true, label: "Personnalisé" }].map(({ key, label }) => {
-            const active = isCustomMode === key;
-            return (
-              <button key={String(key)} onClick={() => setVersusPrefs(p => ({ ...p, customMode: key }))} disabled={creating}
-                style={{ flex: 1, padding: "10px 6px", borderRadius: 999, border: "none",
-                  background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
-                  fontFamily: "inherit", fontSize: 12, fontWeight: 700,
-                  letterSpacing: 0.5, textTransform: "uppercase",
-                  cursor: creating ? "not-allowed" : "pointer", transition: "background .15s",
-                  opacity: creating ? 0.6 : 1 }}>{label}</button>
-            );
-          })}
-        </div>
-        {isCustomMode && <div style={{ fontSize: 11, color: C.inkMute, marginTop: 6, fontWeight: 500 }}>Les rôles (départ/arrivée) seront tirés au hasard, et chacun choisira son film dans le salon</div>}
-      </div>
-
-      {!isCustomMode && (
-        <>
-          <div style={{ marginBottom: 18 }}>
-            <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 10 }}>Mode</div>
-            <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
-              {Object.entries(MODES).map(([key, m]) => {
-                const active = versusPrefs.mode === key;
-                return (
-                  <button key={key} onClick={() => setVersusPrefs(p => ({ ...p, mode: key }))} disabled={creating}
-                    style={{ flex: 1, padding: "10px 6px", borderRadius: 999, border: "none",
-                      background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
-                      fontFamily: "inherit", fontSize: 12, fontWeight: 700,
-                      letterSpacing: 0.5, textTransform: "uppercase",
-                      cursor: creating ? "not-allowed" : "pointer", transition: "background .15s",
-                      opacity: creating ? 0.6 : 1 }}>{m.label}</button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div style={{ marginBottom: 18 }}>
-            <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 10 }}>Difficulté</div>
-            <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
-              {Object.entries(DIFFICULTIES).map(([key, d]) => {
-                const active = versusPrefs.difficulty === key;
-                return (
-                  <button key={key} onClick={() => setVersusPrefs(p => ({ ...p, difficulty: key }))} disabled={creating}
-                    style={{ flex: 1, padding: "9px 4px", borderRadius: 999, border: "none",
-                      background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
-                      fontFamily: "inherit", fontSize: 11, fontWeight: 600,
-                      letterSpacing: 0.4, textTransform: "uppercase",
-                      cursor: creating ? "not-allowed" : "pointer", transition: "background .15s",
-                      opacity: creating ? 0.6 : 1 }}>{d.label}</button>
-                );
-              })}
-            </div>
-            <div style={{ fontSize: 11, color: C.inkMute, marginTop: 6, fontWeight: 500 }}>{DIFFICULTIES[versusPrefs.difficulty].sub}</div>
-          </div>
-        </>
-      )}
-
-      <div style={{ marginBottom: 18 }}>
-        <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 10 }}>Condition de victoire</div>
-        <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
-          {[{ key: "hybrid", label: "Étapes" }, { key: "time", label: "Temps" }].map(({ key, label }) => {
-            const active = (versusPrefs.victoryCondition || "hybrid") === key;
-            return (
-              <button key={key} onClick={() => setVersusPrefs(p => ({ ...p, victoryCondition: key }))} disabled={creating}
-                style={{ flex: 1, padding: "10px 6px", borderRadius: 999, border: "none",
-                  background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
-                  fontFamily: "inherit", fontSize: 12, fontWeight: 700,
-                  letterSpacing: 0.5, textTransform: "uppercase",
-                  cursor: creating ? "not-allowed" : "pointer", transition: "background .15s",
-                  opacity: creating ? 0.6 : 1 }}>{label}</button>
-            );
-          })}
-        </div>
-        <div style={{ fontSize: 11, color: C.inkMute, marginTop: 6, fontWeight: 500 }}>
-          {(versusPrefs.victoryCondition || "hybrid") === "time" ? "Le plus rapide gagne · Indices · Étapes" : "Moins d'étapes gagne · Indices · Temps"}
-        </div>
-      </div>
-
-      {/* Options avancées (collapsible) — masquées en mode personnalisé */}
-      {!isCustomMode && <div style={{ marginBottom: 22 }}>
-        <button onClick={() => setShowAdvanced(s => !s)} disabled={creating}
-          style={{ ...glass, borderRadius: 999, padding: "10px 18px", border: "none",
-            width: "100%", cursor: creating ? "not-allowed" : "pointer", fontFamily: "inherit",
-            display: "flex", alignItems: "center", justifyContent: "space-between",
-            color: C.ink, fontSize: 11, fontWeight: 700, letterSpacing: 1.2, textTransform: "uppercase",
-            opacity: creating ? 0.5 : 1 }}>
-          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            Options du défi
-            {hasActiveAdvanced && <span style={{ width: 6, height: 6, borderRadius: "50%", background: C.green }} />}
-          </span>
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-            style={{ transform: showAdvanced ? "rotate(180deg)" : "rotate(0deg)", transition: "transform .2s" }}>
-            <polyline points="6 9 12 15 18 9"/>
-          </svg>
-        </button>
-
-        {showAdvanced && (
-          <div style={{ marginTop: 8 }}>
-            <VersusFiltersPanel
-              versusPrefs={versusPrefs} setVersusPrefs={setVersusPrefs}
-              disabled={creating} themeColors={C} glass={glass} />
-          </div>
-        )}
-      </div>}
-
-      {errorMsg && (
-        <div style={{ ...glassDark, borderRadius: 14, padding: "10px 14px", marginBottom: 14, fontSize: 12 }}>
-          {errorMsg}
-        </div>
-      )}
-
-      {creating && (
-        <div style={{ textAlign: "center", marginBottom: 14 }}>
-          <Spinner label={statusLabel} themeColors={C} />
-        </div>
-      )}
-
-      <button onClick={handleCreate} disabled={creating || !playerName.trim()}
-        style={{ ...glassDark, borderRadius: 999, padding: "14px 22px",
-          fontSize: 13, letterSpacing: 1.3, textTransform: "uppercase",
-          cursor: (creating || !playerName.trim()) ? "not-allowed" : "pointer",
-          fontFamily: "inherit", fontWeight: 700,
-          border: "none", width: "100%",
-          opacity: (creating || !playerName.trim()) ? 0.4 : 1 }}>
-        {creating ? <>Création<AnimatedDots /></> : "Lancer la partie"}
-      </button>
-    </div>
-  );
-}
-
-function VersusJoinManualScreen({ onBack, onCodeReady, themeColors, glass, glassDark }) {
-  const C = themeColors;
-  const [code, setCode] = useState("");
-  const [checking, setChecking] = useState(false);
-  const [errorMsg, setErrorMsg] = useState(null);
-
-  async function handleSubmit() {
-    const clean = code.replace(/\D/g, "");
-    if (clean.length !== 6) { setErrorMsg("Le code fait 6 chiffres."); return; }
-    setChecking(true);
-    setErrorMsg(null);
-    try {
-      const match = await getMatchByCode(clean);
-      if (!match) { setErrorMsg("Aucune partie avec ce code."); setChecking(false); return; }
-      if (match.status === "finished") { setErrorMsg("Cette partie est terminée."); setChecking(false); return; }
-      onCodeReady(clean);
-    } catch (e) {
-      setErrorMsg("Erreur de vérification. Réessaie.");
-      setChecking(false);
-    }
-  }
-
-  return (
-    <div style={{ minHeight: "100vh", padding: "70px 20px 40px", maxWidth: 480, margin: "0 auto" }}>
-      <header style={{ display: "flex", alignItems: "center", marginBottom: 28 }}>
-        <button onClick={onBack} style={{ ...glass, borderRadius: 999, padding: "9px 14px", cursor: "pointer",
-          fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: C.ink, fontWeight: 600, border: "none" }}>← Retour</button>
-      </header>
-      <div style={{ marginBottom: 28 }}>
-        <div style={{ fontSize: 10, letterSpacing: 4, textTransform: "uppercase", color: C.inkSoft, marginBottom: 10, fontWeight: 600 }}>Versus · Rejoindre</div>
-        <h2 style={{ fontWeight: 800, fontSize: 32, margin: 0, letterSpacing: -1.2, lineHeight: 1, color: C.ink }}>Code de la partie</h2>
-        <p style={{ fontSize: 13, color: C.inkSoft, marginTop: 8, fontWeight: 500 }}>
-          Demande le code à ton ami : 6 chiffres.
-        </p>
-      </div>
-
-      <input value={formatMatchCode(code.replace(/\D/g, ""))}
-        onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-        placeholder="000 000" inputMode="numeric" maxLength={7}
-        style={{ width: "100%", background: C.cardBg, border: `1px solid ${C.hairline}`,
-          outline: "none", borderRadius: 14, padding: "16px 20px",
-          fontSize: 26, fontFamily: "inherit", color: C.ink, fontWeight: 800,
-          letterSpacing: 4, textAlign: "center",
-          fontVariantNumeric: "tabular-nums" }} />
-
-      {errorMsg && (
-        <div style={{ ...glassDark, borderRadius: 14, padding: "10px 14px", marginTop: 14, fontSize: 12 }}>
-          {errorMsg}
-        </div>
-      )}
-
-      <button onClick={handleSubmit} disabled={checking || code.replace(/\D/g, "").length !== 6}
-        style={{ ...glassDark, borderRadius: 999, padding: "14px 22px",
-          fontSize: 13, letterSpacing: 1.3, textTransform: "uppercase",
-          cursor: (checking || code.replace(/\D/g, "").length !== 6) ? "not-allowed" : "pointer",
-          fontFamily: "inherit", fontWeight: 700,
-          border: "none", width: "100%", marginTop: 18,
-          opacity: (checking || code.replace(/\D/g, "").length !== 6) ? 0.4 : 1 }}>
-        {checking ? "Vérification…" : "Continuer"}
-      </button>
-    </div>
-  );
-}
-
-function VersusJoinScreen({ code, onBack, onJoined, themeColors, glass, glassDark }) {
-  const C = themeColors;
-  const [match, setMatch] = useState(null);
-  const [players, setPlayers] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [errorMsg, setErrorMsg] = useState(null);
-  const [playerName, setPlayerName] = useState(getStoredPlayerName());
+  const [code, setCode] = useState(initialCode || "");
   const [joining, setJoining] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const m = await getMatchByCode(code);
-        if (cancelled) return;
-        if (!m) { setErrorMsg("Aucune partie avec ce code."); setLoading(false); return; }
-        if (m.status === "finished") { setErrorMsg("Cette partie est terminée."); setLoading(false); return; }
-        const ps = await getMatchPlayers(m.id);
-        if (cancelled) return;
-
-        // Si on est déjà dans cette partie (token), on passe direct au lobby
-        const myToken = getPlayerToken();
-        const me = ps.find(p => p.player_token === myToken);
-        if (me) { onJoined(); return; }
-
-        // Si la partie est pleine (2 joueurs et pas nous) → refus
-        if (ps.length >= 2) {
-          setErrorMsg("Cette partie est complète.");
-          setLoading(false);
-          return;
-        }
-
-        setMatch(m);
-        setPlayers(ps);
-        setLoading(false);
-      } catch (e) {
-        if (!cancelled) { setErrorMsg("Erreur de chargement."); setLoading(false); }
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [code, onJoined]);
+  const [errorMsg, setErrorMsg] = useState(null);
 
   async function handleJoin() {
     const name = playerName.trim();
+    const clean = code.replace(/\D/g, "");
     if (!name) { setErrorMsg("Choisis un pseudo."); return; }
     if (name.length > 20) { setErrorMsg("Pseudo trop long (20 max)."); return; }
-    savePlayerName(name);
+    if (clean.length !== 6) { setErrorMsg("Le code fait 6 chiffres."); return; }
 
     setJoining(true);
     setErrorMsg(null);
     try {
-      const slot = players.length === 0 ? 1 : 2;
-      await joinMatch(match.id, name, slot);
-      onJoined();
+      const match = await getMatchByCode(clean);
+      if (!match) throw new Error("Aucune partie avec ce code.");
+      if (match.status === "finished") throw new Error("Cette partie est terminée.");
+
+      const myToken = getPlayerToken();
+      const players = await getMatchPlayers(match.id);
+      const already = players.find(p => p.player_token === myToken);
+      if (!already && players.length >= 2) throw new Error("Cette partie est complète.");
+
+      savePlayerName(name);
+      if (!already) {
+        const slot = players.length === 0 ? 1 : 2;
+        await joinMatch(match.id, name, slot);
+      }
+      onJoined(clean);
     } catch (e) {
       console.error(e);
       setErrorMsg(e.message || "Erreur en rejoignant.");
@@ -4456,58 +4151,36 @@ function VersusJoinScreen({ code, onBack, onJoined, themeColors, glass, glassDar
     }
   }
 
-  if (loading) {
-    return (
-      <div style={{ minHeight: "100vh", padding: "70px 20px 40px", maxWidth: 480, margin: "0 auto" }}>
-        <header style={{ display: "flex", alignItems: "center", marginBottom: 28 }}>
-          <button onClick={onBack} style={{ ...glass, borderRadius: 999, padding: "9px 14px", cursor: "pointer",
-            fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: C.ink, fontWeight: 600, border: "none" }}>← Menu</button>
-        </header>
-        <Spinner label="Chargement de la partie…" themeColors={C} />
-      </div>
-    );
-  }
-
-  if (errorMsg && !match) {
-    return (
-      <div style={{ minHeight: "100vh", padding: "70px 20px 40px", maxWidth: 480, margin: "0 auto" }}>
-        <header style={{ display: "flex", alignItems: "center", marginBottom: 28 }}>
-          <button onClick={onBack} style={{ ...glass, borderRadius: 999, padding: "9px 14px", cursor: "pointer",
-            fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: C.ink, fontWeight: 600, border: "none" }}>← Menu</button>
-        </header>
-        <div style={{ ...glass, borderRadius: 22, padding: 40, textAlign: "center" }}>
-          <div style={{ fontWeight: 800, fontSize: 22, marginBottom: 8, color: C.ink }}>Partie inaccessible</div>
-          <div style={{ fontSize: 13, color: C.inkSoft, lineHeight: 1.5 }}>{errorMsg}</div>
-        </div>
-      </div>
-    );
-  }
-
-  const creator = players[0];
-
   return (
     <div style={{ minHeight: "100vh", padding: "70px 20px 40px", maxWidth: 480, margin: "0 auto" }}>
       <header style={{ display: "flex", alignItems: "center", marginBottom: 28 }}>
         <button onClick={onBack} disabled={joining} style={{ ...glass, borderRadius: 999, padding: "9px 14px", cursor: joining ? "not-allowed" : "pointer",
-          fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: C.ink, fontWeight: 600, border: "none", opacity: joining ? 0.5 : 1 }}>← Annuler</button>
+          fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: C.ink, fontWeight: 600, border: "none", opacity: joining ? 0.5 : 1 }}>← Menu</button>
       </header>
-      <div style={{ marginBottom: 24 }}>
-        <div style={{ fontSize: 10, letterSpacing: 4, textTransform: "uppercase", color: C.inkSoft, marginBottom: 10, fontWeight: 600 }}>Versus · Invitation</div>
-        <h2 style={{ fontWeight: 800, fontSize: 28, margin: 0, letterSpacing: -1, lineHeight: 1.1, color: C.ink }}>
-          {creator ? `${creator.player_name} t'invite` : "Tu rejoins la partie"}
-        </h2>
-        <p style={{ fontSize: 13, color: C.inkSoft, marginTop: 10, fontWeight: 500 }}>
-          Difficulté : <strong>{DIFFICULTIES[match.difficulty]?.label || "—"}</strong>
-        </p>
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ fontSize: 10, letterSpacing: 4, textTransform: "uppercase", color: C.inkSoft, marginBottom: 10, fontWeight: 600 }}>Versus · Rejoindre</div>
+        <h2 style={{ fontWeight: 800, fontSize: 32, margin: 0, letterSpacing: -1.2, lineHeight: 1, color: C.ink }}>Rejoindre une partie</h2>
       </div>
 
-      <div style={{ marginBottom: 22 }}>
+      <div style={{ marginBottom: 18 }}>
         <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 10 }}>Ton pseudo</div>
         <input value={playerName} onChange={(e) => setPlayerName(e.target.value)}
-          placeholder="Ton pseudo" maxLength={20} disabled={joining}
+          placeholder="Mathieu, Kévin…" maxLength={20} disabled={joining}
           style={{ width: "100%", background: C.cardBg, border: `1px solid ${C.hairline}`,
             outline: "none", borderRadius: 14, padding: "12px 16px",
             fontSize: 16, fontFamily: "inherit", color: C.ink, fontWeight: 600 }} />
+      </div>
+
+      <div style={{ marginBottom: 18 }}>
+        <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 10 }}>Code de la partie</div>
+        <input value={formatMatchCode(code.replace(/\D/g, ""))}
+          onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+          placeholder="000 000" inputMode="numeric" maxLength={7} disabled={joining}
+          style={{ width: "100%", background: C.cardBg, border: `1px solid ${C.hairline}`,
+            outline: "none", borderRadius: 14, padding: "16px 20px",
+            fontSize: 26, fontFamily: "inherit", color: C.ink, fontWeight: 800,
+            letterSpacing: 4, textAlign: "center",
+            fontVariantNumeric: "tabular-nums" }} />
       </div>
 
       {errorMsg && (
@@ -4516,13 +4189,13 @@ function VersusJoinScreen({ code, onBack, onJoined, themeColors, glass, glassDar
         </div>
       )}
 
-      <button onClick={handleJoin} disabled={joining || !playerName.trim()}
+      <button onClick={handleJoin} disabled={joining || !playerName.trim() || code.replace(/\D/g, "").length !== 6}
         style={{ ...glassDark, borderRadius: 999, padding: "14px 22px",
           fontSize: 13, letterSpacing: 1.3, textTransform: "uppercase",
-          cursor: (joining || !playerName.trim()) ? "not-allowed" : "pointer",
+          cursor: (joining || !playerName.trim() || code.replace(/\D/g, "").length !== 6) ? "not-allowed" : "pointer",
           fontFamily: "inherit", fontWeight: 700,
           border: "none", width: "100%",
-          opacity: (joining || !playerName.trim()) ? 0.4 : 1 }}>
+          opacity: (joining || !playerName.trim() || code.replace(/\D/g, "").length !== 6) ? 0.4 : 1 }}>
         {joining ? "Connexion…" : "Rejoindre"}
       </button>
     </div>
@@ -4535,21 +4208,22 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
   const [players, setPlayers] = useState([]);
   const [error, setError] = useState(null);
   const [shareStatus, setShareStatus] = useState(null);
-  const [starting, setStarting] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
-  // États pour le défi affiché dans le lobby
+  // États pour le défi affiché dans le lobby (mode standard)
   const [defiWorks, setDefiWorks] = useState({ start: null, end: null });
-  // États pour la proposition de changement
   const [refreshing, setRefreshing] = useState(null); // null | "start" | "end" | "both"
-  const [proposalAction, setProposalAction] = useState(null); // null | "accept" | "refuse"
+  const [togglingReady, setTogglingReady] = useState(false);
   const [countdown, setCountdown] = useState(null); // null | 3 | 2 | 1 | 0
   const startedRef = useRef(false);
   const matchToStartRef = useRef(null);
-  // États pour le mode personnalisé : recherche/choix du film de mon rôle (départ ou arrivée, tiré au hasard)
+  // États pour le mode sur-mesure : recherche/choix du film de mon rôle (départ ou arrivée, tiré au hasard)
   const [pickSearch, setPickSearch] = useState("");
   const [pickSearchResults, setPickSearchResults] = useState([]);
   const [pickSearching, setPickSearching] = useState(false);
   const [pickSaving, setPickSaving] = useState(false);
+  const [opponentPickWork, setOpponentPickWork] = useState(null);
+  // Pseudo éditable (créateur uniquement)
+  const [pseudoInput, setPseudoInput] = useState("");
 
   const myToken = useMemo(() => getPlayerToken(), []);
   const me = players.find(p => p.player_token === myToken);
@@ -4558,9 +4232,10 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
   const bothReady = players.length === 2;
   const pendingChange = match?.pending_change || null;
   const mySlot = me?.slot;
-  const iAmProposer = pendingChange && mySlot && pendingChange.proposed_by_slot === mySlot;
   const opponentName = opponent?.player_name || "Adversaire";
-  // Mode personnalisé : rôle tiré au hasard (qui choisit le départ, qui choisit l'arrivée)
+  const locked = countdown !== null;
+
+  // Mode sur-mesure : rôle tiré au hasard (qui choisit le départ, qui choisit l'arrivée)
   const isPickingPhase = !!match?.custom_mode && pendingChange?.phase === "picking";
   const myRole = isPickingPhase
     ? (pendingChange.startSlot === mySlot ? "startPick" : pendingChange.endSlot === mySlot ? "endPick" : null)
@@ -4569,6 +4244,13 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
   const myPick = myRole ? pendingChange?.[myRole] : null;
   const opponentPick = opponentRole ? pendingChange?.[opponentRole] : null;
   const myRoleLabel = myRole === "startPick" ? "départ" : "arrivée";
+
+  // Mode standard : défi "vierge" tant que personne n'a tiré de film (placeholder start === end)
+  const noDefiYet = !match?.custom_mode && match?.start_id != null &&
+    match.start_id === match.end_id && match.start_type === match.end_type;
+  const readySlots = (!match?.custom_mode && pendingChange?.readySlots) || [];
+  const iAmReady = !!mySlot && readySlots.includes(mySlot);
+  const opponentReady = !!opponent && readySlots.includes(opponent.slot);
 
   // Charge initial + subscribe realtime
   useEffect(() => {
@@ -4580,9 +4262,6 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
         const m = await getMatchByCode(code);
         if (cancelled) return;
         if (!m) { setError("Partie introuvable."); return; }
-        // Si on arrive sur une partie avec un pending_change orphelin, on le purge
-        // (sécurité : un client a pu fermer son onglet en plein milieu d'une proposition)
-        // Seul le créateur fait ce nettoyage, pour éviter une double-update
         setMatch(m);
         const ps = await getMatchPlayers(m.id);
         if (cancelled) return;
@@ -4614,7 +4293,26 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
     };
   }, [code]);
 
-  // Mode personnalisé : dès que les 2 joueurs sont là pour une manche fraîche (pas de pending_change),
+  // Pseudo : seed depuis le nom enregistré en DB pour le créateur
+  useEffect(() => {
+    if (me?.player_name != null) setPseudoInput(me.player_name);
+  }, [me?.player_name]);
+
+  // Pseudo : sync live vers la DB (debounce), créateur uniquement
+  useEffect(() => {
+    if (!iAmCreator || !me) return;
+    const trimmed = pseudoInput.trim();
+    if (!trimmed || trimmed === me.player_name) return;
+    const handle = setTimeout(async () => {
+      try {
+        await updatePlayerName(me.id, trimmed);
+        savePlayerName(trimmed);
+      } catch (e) { console.error(e); }
+    }, 600);
+    return () => clearTimeout(handle);
+  }, [pseudoInput, iAmCreator, me?.id, me?.player_name]);
+
+  // Mode sur-mesure : dès que les 2 joueurs sont là pour une manche fraîche (pas de pending_change),
   // tire au hasard qui choisit le départ et qui choisit l'arrivée. Claim atomique : premier arrivé gagne,
   // l'autre reçoit le résultat via l'écho realtime.
   useEffect(() => {
@@ -4634,7 +4332,7 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
     return () => { cancelled = true; };
   }, [match?.custom_mode, bothReady, match?.status, match?.pending_change, match?.id]);
 
-  // Mode personnalisé : recherche de film pour le joueur en train de choisir son rôle (départ ou arrivée)
+  // Mode sur-mesure : recherche de film pour le joueur en train de choisir son rôle (départ ou arrivée)
   useEffect(() => {
     if (!myRole || myPick) { setPickSearchResults([]); return; }
     if (!pickSearch || pickSearch.trim().length < 2) { setPickSearchResults([]); return; }
@@ -4647,8 +4345,17 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
     return () => clearTimeout(handle);
   }, [pickSearch, myRole, myPick]);
 
-  // Charge les œuvres du défi pour affichage. Gating sur bothReady : les deux joueurs
-  // découvrent les affiches au même moment, dès que la partie est au complet.
+  // Mode sur-mesure : fetch l'affiche du film choisi par l'adversaire (pour l'afficher flouté)
+  useEffect(() => {
+    if (!opponentPick?.id) { setOpponentPickWork(null); return; }
+    let cancelled = false;
+    getWorksByPairs([{ id: opponentPick.id, type: opponentPick.type }])
+      .then(works => { if (!cancelled && works[0]) setOpponentPickWork(works[0]); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [opponentPick?.id, opponentPick?.type]);
+
+  // Charge les œuvres du défi standard pour affichage, dès qu'un vrai défi existe (pas le placeholder vierge).
   useEffect(() => {
     if (!match?.start_id || !match?.end_id || !bothReady || match?.custom_mode) return;
     let cancelled = false;
@@ -4661,8 +4368,31 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
     return () => { cancelled = true; };
   }, [match?.start_id, match?.start_type, match?.end_id, match?.end_type, bothReady]);
 
+  // Auto-start : dès que le défi est validé par les 2 joueurs (OK pour moi en standard,
+  // film choisi des 2 côtés en sur-mesure), n'importe quel client lance la partie.
+  // Claim atomique dans startMatch (WHERE status='waiting') : un seul lancement effectif.
+  useEffect(() => {
+    if (!match || match.status !== "waiting") return;
+    let ready = false, customStart = null, customEnd = null;
+    if (match.custom_mode) {
+      const pc = match.pending_change;
+      if (pc?.startPick && pc?.endPick) { ready = true; customStart = pc.startPick; customEnd = pc.endPick; }
+    } else {
+      const rs = match.pending_change?.readySlots || [];
+      const hasDefi = match.start_id !== match.end_id || match.start_type !== match.end_type;
+      ready = hasDefi && rs.includes(1) && rs.includes(2);
+    }
+    if (!ready) return;
+    let cancelled = false;
+    (async () => {
+      try { await startMatch(match.id, match.victory_condition || "hybrid", customStart, customEnd); }
+      catch (e) { console.error(e); }
+    })();
+    return () => { cancelled = true; };
+  }, [match?.custom_mode, match?.pending_change, match?.status, match?.start_id, match?.start_type, match?.end_id, match?.end_type, match?.victory_condition, match?.id]);
+
   // Auto-démarre le jeu quand le match passe en "playing"
-  // (déclenché pour J1 par son click, pour J2 par l'echo realtime)
+  // (déclenché côté local par l'effet auto-start, côté distant par l'echo realtime)
   useEffect(() => {
     if (!match) return;
     if (match.status !== "playing") return;
@@ -4680,26 +4410,7 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
     return () => clearTimeout(t);
   }, [countdown, onStartGame]);
 
-  async function handleStart() {
-    if (!match || starting) return;
-    setStarting(true);
-    try {
-      let customStart = null, customEnd = null;
-      if (match.custom_mode) {
-        const pc = match.pending_change;
-        if (!pc?.startPick || !pc?.endPick) throw new Error("Les deux joueurs doivent avoir choisi leur film.");
-        customStart = pc.startPick;
-        customEnd = pc.endPick;
-      }
-      await startMatch(match.id, versusPrefs?.victoryCondition || "hybrid", customStart, customEnd);
-    } catch (e) {
-      console.error(e);
-      setError(e.message || "Erreur au lancement.");
-      setStarting(false);
-    }
-  }
-
-  // Mode personnalisé : j'enregistre mon choix de film (départ ou arrivée selon mon rôle tiré au hasard)
+  // Mode sur-mesure : j'enregistre mon choix de film (départ ou arrivée selon mon rôle tiré au hasard)
   async function handleSelectPick(film) {
     if (!myRole || myPick || pickSaving) return;
     setPickSaving(true);
@@ -4713,9 +4424,10 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
     }
   }
 
-  // Propose de changer le défi (un film ou les deux) à l'autre joueur via pending_change
-  async function handleProposeChange(target) {
-    if (!match || refreshing || pendingChange || !defiWorks.start || !defiWorks.end) return;
+  // Mode standard : applique un nouveau défi (un film ou les deux) — n'importe quel joueur peut le faire
+  // à tout moment, ça remet les 2 "OK pour moi" à zéro.
+  async function handleRefreshDefi(target) {
+    if (!match || refreshing) return;
     setRefreshing(target);
     try {
       const result = await generateNewDefi({
@@ -4724,15 +4436,7 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
         target,
         versusPrefs,
       });
-      await proposeMatchChange(match.id, {
-        proposedBySlot: mySlot,
-        target,
-        newStart: result.start,
-        newEnd: result.end,
-        optimalSteps: result.optimalSteps,
-        difficulty: result.difficulty,
-      });
-      // L'echo realtime fera apparaître la proposition de notre côté aussi
+      await applyNewDefi(match.id, result);
     } catch (e) {
       console.error(e);
       setError(e.message || "Aucun film trouvé.");
@@ -4741,42 +4445,30 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
     }
   }
 
-  async function handleAcceptChange() {
-    if (!pendingChange || proposalAction) return;
-    setProposalAction("accept");
+  // Mode standard : bascule librement mon "OK pour moi" sur le défi en cours
+  async function handleToggleReady() {
+    if (!match || !mySlot || togglingReady) return;
+    setTogglingReady(true);
     try {
-      await acceptPendingChange(match.id, pendingChange);
+      await setReadySlot(match.id, match.pending_change, mySlot, !iAmReady);
     } catch (e) {
       console.error(e);
-      setError(e.message || "Erreur lors de l'acceptation.");
+      setError(e.message || "Erreur.");
     } finally {
-      setProposalAction(null);
+      setTogglingReady(false);
     }
   }
 
-  async function handleRefuseChange() {
-    if (!pendingChange || proposalAction) return;
-    setProposalAction("refuse");
-    try {
-      await clearPendingChange(match.id);
-    } catch (e) {
-      console.error(e);
-      setError(e.message || "Erreur lors du refus.");
-    } finally {
-      setProposalAction(null);
-    }
+  async function handleSetVictoryCondition(key) {
+    if (!match || locked || match.victory_condition === key) return;
+    try { await setMatchVictoryCondition(match.id, key); }
+    catch (e) { console.error(e); setError(e.message); }
   }
 
-  async function handleCancelProposal() {
-    if (!pendingChange || proposalAction) return;
-    setProposalAction("refuse");
-    try {
-      await clearPendingChange(match.id);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setProposalAction(null);
-    }
+  async function handleToggleCustomMode(nextCustomMode) {
+    if (!match || locked || !!match.custom_mode === nextCustomMode) return;
+    try { await resetMatchDefi(match.id, nextCustomMode); }
+    catch (e) { console.error(e); setError(e.message); }
   }
 
   const shareUrl = `${window.location.origin}${window.location.pathname}?versus=${code}`;
@@ -4820,8 +4512,8 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
   return (
     <div style={{ minHeight: "100vh", padding: "70px 20px 40px", maxWidth: 480, margin: "0 auto" }}>
       <header style={{ display: "flex", alignItems: "center", marginBottom: 28 }}>
-        <button onClick={onBack} disabled={starting} style={{ ...glass, borderRadius: 999, padding: "9px 14px", cursor: starting ? "not-allowed" : "pointer",
-          fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: C.ink, fontWeight: 600, border: "none", opacity: starting ? 0.5 : 1 }}>← Quitter</button>
+        <button onClick={onBack} disabled={locked} style={{ ...glass, borderRadius: 999, padding: "9px 14px", cursor: locked ? "not-allowed" : "pointer",
+          fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: C.ink, fontWeight: 600, border: "none", opacity: locked ? 0.5 : 1 }}>← Quitter</button>
       </header>
 
       <div style={{ marginBottom: 28, textAlign: "center" }}>
@@ -4830,6 +4522,17 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
           {bothReady ? "Prêt à jouer !" : <>En attente du joueur 2<AnimatedDots /></>}
         </h2>
       </div>
+
+      {/* Pseudo (créateur uniquement) */}
+      {iAmCreator && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, marginBottom: 8, fontWeight: 600 }}>Ton pseudo</div>
+          <input value={pseudoInput} onChange={(e) => setPseudoInput(e.target.value)} maxLength={20} disabled={locked}
+            style={{ width: "100%", background: C.cardBg, border: `1px solid ${C.hairline}`,
+              outline: "none", borderRadius: 14, padding: "12px 16px",
+              fontSize: 16, fontFamily: "inherit", color: C.ink, fontWeight: 600 }} />
+        </div>
+      )}
 
       {/* Code à partager */}
       {iAmCreator && !bothReady && (
@@ -4870,40 +4573,121 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
         </div>
       </div>
 
-      {/* Proposition de changement (désactivée en mode personnalisé) */}
-      {!match?.custom_mode && bothReady && pendingChange && !iAmProposer && (
-        <PendingChangeBanner
-          pendingChange={pendingChange}
-          proposerName={opponentName}
-          onAccept={handleAcceptChange}
-          onRefuse={handleRefuseChange}
-          loadingAction={proposalAction}
-          themeColors={C} glass={glass} glassDark={glassDark} />
-      )}
-      {!match?.custom_mode && bothReady && pendingChange && iAmProposer && (
-        <div style={{ ...glass, borderRadius: 16, padding: "14px 16px", marginBottom: 20,
-          border: `1px solid ${C.versusMe}40` }}>
-          <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: C.versusMe, fontWeight: 700, marginBottom: 6 }}>Proposition envoyée</div>
-          <div style={{ fontSize: 13, color: C.inkSoft, fontWeight: 500, marginBottom: 10 }}>En attente de {opponentName}<AnimatedDots /></div>
-          <button onClick={handleCancelProposal} disabled={proposalAction === "refuse"}
-            style={{ background: "transparent", border: `1px solid ${C.hairline}`, borderRadius: 999, padding: "7px 14px",
-              fontSize: 10, letterSpacing: 1, textTransform: "uppercase",
-              cursor: proposalAction === "refuse" ? "not-allowed" : "pointer",
-              fontFamily: "inherit", fontWeight: 700, color: C.ink, opacity: proposalAction === "refuse" ? 0.5 : 1 }}>
-            {proposalAction === "refuse" ? <>Annulation<AnimatedDots /></> : "Annuler la proposition"}
-          </button>
+      {/* Réglages de la partie (créateur uniquement) : condition de victoire, type de partie, mode, difficulté, options */}
+      {iAmCreator && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 8 }}>Condition de victoire</div>
+            <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
+              {[{ key: "hybrid", label: "Étapes" }, { key: "time", label: "Temps" }].map(({ key, label }) => {
+                const active = (match.victory_condition || "hybrid") === key;
+                return (
+                  <button key={key} onClick={() => handleSetVictoryCondition(key)} disabled={locked}
+                    style={{ flex: 1, padding: "9px 6px", borderRadius: 999, border: "none",
+                      background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
+                      fontFamily: "inherit", fontSize: 11, fontWeight: 700,
+                      letterSpacing: 0.5, textTransform: "uppercase",
+                      cursor: locked ? "not-allowed" : "pointer",
+                      opacity: locked ? 0.6 : 1 }}>{label}</button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 8 }}>Type de partie</div>
+            <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
+              {[{ key: false, label: "Standard" }, { key: true, label: "Sur-mesure" }].map(({ key, label }) => {
+                const active = !!match.custom_mode === key;
+                return (
+                  <button key={String(key)} onClick={() => handleToggleCustomMode(key)} disabled={locked}
+                    style={{ flex: 1, padding: "9px 6px", borderRadius: 999, border: "none",
+                      background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
+                      fontFamily: "inherit", fontSize: 11, fontWeight: 700,
+                      letterSpacing: 0.5, textTransform: "uppercase",
+                      cursor: locked ? "not-allowed" : "pointer",
+                      opacity: locked ? 0.6 : 1 }}>{label}</button>
+                );
+              })}
+            </div>
+          </div>
+
+          {!match.custom_mode && (
+            <>
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 8 }}>Mode</div>
+                <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
+                  {Object.entries(MODES).map(([key, m]) => {
+                    const active = versusPrefs.mode === key;
+                    return (
+                      <button key={key} onClick={() => setVersusPrefs(p => ({ ...p, mode: key }))} disabled={locked}
+                        style={{ flex: 1, padding: "9px 6px", borderRadius: 999, border: "none",
+                          background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
+                          fontFamily: "inherit", fontSize: 11, fontWeight: 700,
+                          letterSpacing: 0.5, textTransform: "uppercase",
+                          cursor: locked ? "not-allowed" : "pointer",
+                          opacity: locked ? 0.6 : 1 }}>{m.label}</button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 8 }}>Difficulté</div>
+                <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
+                  {Object.entries(DIFFICULTIES).map(([key, d]) => {
+                    const active = versusPrefs.difficulty === key;
+                    return (
+                      <button key={key} onClick={() => setVersusPrefs(p => ({ ...p, difficulty: key }))} disabled={locked}
+                        style={{ flex: 1, padding: "8px 4px", borderRadius: 999, border: "none",
+                          background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
+                          fontFamily: "inherit", fontSize: 10, fontWeight: 600,
+                          letterSpacing: 0.4, textTransform: "uppercase",
+                          cursor: locked ? "not-allowed" : "pointer",
+                          opacity: locked ? 0.6 : 1 }}>{d.label}</button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <button onClick={() => setShowFilters(s => !s)} disabled={locked}
+                style={{ ...glass, borderRadius: 999, padding: "10px 18px", border: "none",
+                  width: "100%", cursor: locked ? "not-allowed" : "pointer", fontFamily: "inherit",
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  color: C.ink, fontSize: 11, fontWeight: 700, letterSpacing: 1.2, textTransform: "uppercase",
+                  opacity: locked ? 0.5 : 1 }}>
+                <span>Options du défi</span>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                  style={{ transform: showFilters ? "rotate(180deg)" : "rotate(0deg)", transition: "transform .2s" }}>
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+              </button>
+
+              {showFilters && (
+                <div style={{ marginTop: 8 }}>
+                  <VersusFiltersPanel
+                    versusPrefs={versusPrefs} setVersusPrefs={setVersusPrefs}
+                    disabled={locked} themeColors={C} glass={glass} />
+                </div>
+              )}
+            </>
+          )}
         </div>
       )}
 
-      {/* Défi : mode standard (affiches) ou mode personnalisé (choix) */}
+      {/* Défi : mode standard (affiches + OK pour moi) ou sur-mesure (choix symétrique) */}
       <div style={{ ...glass, borderRadius: 22, padding: "20px 16px", marginBottom: 20 }}>
         <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, marginBottom: 16, fontWeight: 600, textAlign: "center" }}>
-          {match?.custom_mode ? "Partie personnalisée" : "Le défi"}
+          {match?.custom_mode ? "Partie sur-mesure" : "Le défi"}
         </div>
 
         {match?.custom_mode ? (
-          /* UI mode personnalisé : choix symétrique, rôle (départ/arrivée) tiré au hasard */
-          !isPickingPhase ? (
+          /* UI sur-mesure : choix symétrique, rôle (départ/arrivée) tiré au hasard */
+          !bothReady ? (
+            <div style={{ padding: "16px 0", textAlign: "center", color: C.inkMute, fontSize: 13 }}>
+              Les rôles seront tirés au hasard quand l'adversaire rejoindra.
+            </div>
+          ) : !isPickingPhase ? (
             <div style={{ padding: "16px 0", textAlign: "center", color: C.inkMute, fontSize: 13 }}>
               <AnimatedDots />Tirage des rôles
             </div>
@@ -4962,154 +4746,88 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
                 <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, marginBottom: 8, fontWeight: 600 }}>
                   {opponentName} choisit le {myRoleLabel === "départ" ? "arrivée" : "départ"}
                 </div>
-                {opponentPick
-                  ? <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>✓ Film choisi — prêt à démarrer</div>
-                  : <div style={{ fontSize: 13, color: C.inkMute }}><AnimatedDots />En attente du choix</div>
-                }
+                {!opponentPick ? (
+                  <div style={{ fontSize: 13, color: C.inkMute }}><AnimatedDots />En attente du choix</div>
+                ) : (
+                  <div style={{ position: "relative", width: 44, height: 66, borderRadius: 6, overflow: "hidden", flexShrink: 0 }}>
+                    <div style={{ position: "absolute", inset: 0, filter: "blur(9px)", transform: "scale(1.2)" }}>
+                      <Poster movie={opponentPickWork || opponentPick} size={44} rounded={6} themeColors={C} />
+                    </div>
+                    <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.25)",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      fontSize: 22, fontWeight: 800, color: "#fff", textShadow: "0 1px 6px rgba(0,0,0,0.7)" }}>?</div>
+                  </div>
+                )}
               </div>
             </div>
           )
         ) : (
           /* UI mode standard */
-          !bothReady
-            ? <div style={{ padding: "16px 0", textAlign: "center", color: C.inkMute, fontSize: 13 }}>
-                Les affiches seront révélées quand l'adversaire rejoindra.
+          !bothReady ? (
+            <div style={{ padding: "16px 0", textAlign: "center", color: C.inkMute, fontSize: 13 }}>
+              Les affiches seront révélées quand l'adversaire rejoindra.
+            </div>
+          ) : noDefiYet ? (
+            <div style={{ textAlign: "center", padding: "16px 0" }}>
+              <div style={{ fontSize: 13, color: C.inkMute, marginBottom: 14 }}>Aucun défi pour l'instant.</div>
+              <button onClick={() => handleRefreshDefi("both")} disabled={!!refreshing}
+                style={{ ...glassDark, borderRadius: 999, padding: "12px 20px", border: "none",
+                  fontFamily: "inherit", fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
+                  cursor: refreshing ? "not-allowed" : "pointer", opacity: refreshing ? 0.6 : 1 }}>
+                {refreshing === "both" ? <>Recherche<AnimatedDots /></> : "Tirer un défi aléatoire"}
+              </button>
+            </div>
+          ) : !defiWorks.start || !defiWorks.end ? (
+            <Spinner label="Chargement du défi…" themeColors={C} />
+          ) : (
+            <>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+                <LobbyDefiSide label="Départ" movie={defiWorks.start} align="left"
+                  onRefresh={() => handleRefreshDefi("start")}
+                  refreshing={refreshing === "start"} disabledAll={!!refreshing} themeColors={C} />
+                <div style={{ flex: 1, height: 1, background: C.hairline, marginTop: 56 }} />
+                <LobbyDefiSide label="Arrivée" movie={defiWorks.end} align="right"
+                  onRefresh={() => handleRefreshDefi("end")}
+                  refreshing={refreshing === "end"} disabledAll={!!refreshing} themeColors={C} />
               </div>
-            : (() => {
-                const displayStart = pendingChange ? pendingChange.new_start : defiWorks.start;
-                const displayEnd   = pendingChange ? pendingChange.new_end   : defiWorks.end;
-                if (!displayStart || !displayEnd) return <Spinner label="Chargement du défi…" themeColors={C} />;
-                return (
-                  <>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
-                      <LobbyDefiSide label="Départ" movie={displayStart} align="left"
-                        onRefresh={!pendingChange ? () => handleProposeChange("start") : null}
-                        refreshing={refreshing === "start"} disabledAll={!!pendingChange || !!refreshing} themeColors={C} />
-                      <div style={{ flex: 1, height: 1, background: C.hairline, marginTop: 56 }} />
-                      <LobbyDefiSide label="Arrivée" movie={displayEnd} align="right"
-                        onRefresh={!pendingChange ? () => handleProposeChange("end") : null}
-                        refreshing={refreshing === "end"} disabledAll={!!pendingChange || !!refreshing} themeColors={C} />
-                    </div>
-                    {!pendingChange && (
-                      <button onClick={() => handleProposeChange("both")} disabled={!!refreshing}
-                        style={{ ...glass, borderRadius: 999, padding: "10px 16px",
-                          border: `1px solid ${C.hairline}`, width: "100%", marginTop: 16,
-                          fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase",
-                          cursor: refreshing ? "not-allowed" : "pointer", fontFamily: "inherit",
-                          color: C.ink, fontWeight: 700, opacity: refreshing ? 0.5 : 1,
-                          display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-                        {refreshing === "both" ? <>Recherche<AnimatedDots /></> : (
-                          <><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                            <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
-                            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-                          </svg>Nouveau défi</>
-                        )}
-                      </button>
-                    )}
-                  </>
-                );
-              })()
+              <button onClick={() => handleRefreshDefi("both")} disabled={!!refreshing}
+                style={{ ...glass, borderRadius: 999, padding: "10px 16px",
+                  border: `1px solid ${C.hairline}`, width: "100%", marginTop: 16,
+                  fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase",
+                  cursor: refreshing ? "not-allowed" : "pointer", fontFamily: "inherit",
+                  color: C.ink, fontWeight: 700, opacity: refreshing ? 0.5 : 1,
+                  display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                {refreshing === "both" ? <>Recherche<AnimatedDots /></> : (
+                  <><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
+                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                  </svg>Nouveau défi</>
+                )}
+              </button>
+
+              <div style={{ height: 1, background: C.hairline, margin: "16px 0" }} />
+
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                <button onClick={handleToggleReady} disabled={togglingReady}
+                  style={{ ...(iAmReady ? glassDark : glass), borderRadius: 999, padding: "10px 18px",
+                    border: iAmReady ? "none" : `1px solid ${C.hairline}`,
+                    fontFamily: "inherit", fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
+                    cursor: togglingReady ? "not-allowed" : "pointer", opacity: togglingReady ? 0.6 : 1 }}>
+                  {iAmReady ? "✓ OK pour moi" : "OK pour moi"}
+                </button>
+                <div style={{ fontSize: 12, color: opponentReady ? C.green : C.inkMute, fontWeight: 600 }}>
+                  {opponentReady ? <>✓ {opponentName} est prêt</> : <>{opponentName}<AnimatedDots /></>}
+                </div>
+              </div>
+              <div style={{ textAlign: "center", fontSize: 11, color: C.inkMute, marginTop: 12 }}>
+                La partie démarre automatiquement dès que vous êtes prêts tous les deux.
+              </div>
+            </>
+          )
         )}
       </div>
 
-      {/* Filtres du défi (créateur uniquement, masqués en mode personnalisé) */}
-      {iAmCreator && versusPrefs && setVersusPrefs && !match?.custom_mode && (
-        <div style={{ marginBottom: 20 }}>
-          <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 8 }}>Mode</div>
-            <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
-              {Object.entries(MODES).map(([key, m]) => {
-                const active = versusPrefs.mode === key;
-                return (
-                  <button key={key} onClick={() => setVersusPrefs(p => ({ ...p, mode: key }))} disabled={starting}
-                    style={{ flex: 1, padding: "9px 6px", borderRadius: 999, border: "none",
-                      background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
-                      fontFamily: "inherit", fontSize: 11, fontWeight: 700,
-                      letterSpacing: 0.5, textTransform: "uppercase",
-                      cursor: starting ? "not-allowed" : "pointer",
-                      opacity: starting ? 0.6 : 1 }}>{m.label}</button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 8 }}>Difficulté</div>
-            <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
-              {Object.entries(DIFFICULTIES).map(([key, d]) => {
-                const active = versusPrefs.difficulty === key;
-                return (
-                  <button key={key} onClick={() => setVersusPrefs(p => ({ ...p, difficulty: key }))} disabled={starting}
-                    style={{ flex: 1, padding: "8px 4px", borderRadius: 999, border: "none",
-                      background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
-                      fontFamily: "inherit", fontSize: 10, fontWeight: 600,
-                      letterSpacing: 0.4, textTransform: "uppercase",
-                      cursor: starting ? "not-allowed" : "pointer",
-                      opacity: starting ? 0.6 : 1 }}>{d.label}</button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 8 }}>Condition de victoire</div>
-            <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
-              {[{ key: "hybrid", label: "Étapes" }, { key: "time", label: "Temps" }].map(({ key, label }) => {
-                const active = (versusPrefs.victoryCondition || "hybrid") === key;
-                return (
-                  <button key={key} onClick={() => setVersusPrefs(p => ({ ...p, victoryCondition: key }))} disabled={starting}
-                    style={{ flex: 1, padding: "9px 6px", borderRadius: 999, border: "none",
-                      background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
-                      fontFamily: "inherit", fontSize: 11, fontWeight: 700,
-                      letterSpacing: 0.5, textTransform: "uppercase",
-                      cursor: starting ? "not-allowed" : "pointer",
-                      opacity: starting ? 0.6 : 1 }}>{label}</button>
-                );
-              })}
-            </div>
-          </div>
-
-          <button onClick={() => setShowFilters(s => !s)} disabled={starting}
-            style={{ ...glass, borderRadius: 999, padding: "10px 18px", border: "none",
-              width: "100%", cursor: starting ? "not-allowed" : "pointer", fontFamily: "inherit",
-              display: "flex", alignItems: "center", justifyContent: "space-between",
-              color: C.ink, fontSize: 11, fontWeight: 700, letterSpacing: 1.2, textTransform: "uppercase",
-              opacity: starting ? 0.5 : 1 }}>
-            <span>Options du défi</span>
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-              style={{ transform: showFilters ? "rotate(180deg)" : "rotate(0deg)", transition: "transform .2s" }}>
-              <polyline points="6 9 12 15 18 9"/>
-            </svg>
-          </button>
-
-          {showFilters && (
-            <div style={{ marginTop: 8 }}>
-              <VersusFiltersPanel
-                versusPrefs={versusPrefs} setVersusPrefs={setVersusPrefs}
-                disabled={starting} themeColors={C} glass={glass} />
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Action principale */}
-      {bothReady ? (
-        iAmCreator ? (
-          <button onClick={handleStart}
-            disabled={starting || (match?.custom_mode && !(pendingChange?.startPick && pendingChange?.endPick))}
-            style={{ ...glassDark, borderRadius: 999, padding: "14px 22px",
-              fontSize: 13, letterSpacing: 1.3, textTransform: "uppercase",
-              cursor: (starting || (match?.custom_mode && !(pendingChange?.startPick && pendingChange?.endPick))) ? "not-allowed" : "pointer",
-              fontFamily: "inherit", fontWeight: 700, border: "none", width: "100%",
-              opacity: (starting || (match?.custom_mode && !(pendingChange?.startPick && pendingChange?.endPick))) ? 0.4 : 1 }}>
-            {starting ? <>Lancement<AnimatedDots /></> : "Démarrer le défi"}
-          </button>
-        ) : (
-          <div style={{ textAlign: "center", fontSize: 12, color: C.inkSoft, fontWeight: 500, padding: "12px 0" }}>
-            En attente du créateur pour lancer la partie<AnimatedDots />
-          </div>
-        )
-      ) : (
+      {!bothReady && (
         <div style={{ textAlign: "center", fontSize: 12, color: C.inkMute, fontWeight: 500, padding: "12px 0" }}>
           {iAmCreator
             ? "Partage le code ou le lien à ton ami."
@@ -5176,78 +4894,6 @@ function LobbyDefiSide({ label, movie, align, onRefresh, refreshing, disabledAll
   );
 }
 
-// Bannière de proposition de changement (côté de celui qui doit accepter/refuser)
-function PendingChangeBanner({ pendingChange, proposerName, onAccept, onRefuse, loadingAction, themeColors, glass, glassDark }) {
-  const C = themeColors;
-  const targetLabel = pendingChange.target === "start" ? "le départ"
-                   : pendingChange.target === "end"   ? "l'arrivée"
-                                                      : "les deux films";
-
-  return (
-    <div style={{ ...glass, borderRadius: 16, padding: "16px 16px 14px", marginBottom: 20,
-      border: `2px solid ${C.versusOpponent}` }}>
-      <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: C.versusOpponent, fontWeight: 700, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
-        <span style={{ width: 7, height: 7, borderRadius: "50%", background: C.versusOpponent, display: "inline-block" }} />
-        {proposerName} propose
-      </div>
-      <div style={{ fontSize: 14, fontWeight: 700, color: C.ink, letterSpacing: -0.3, marginBottom: 12 }}>
-        Changer {targetLabel}
-      </div>
-
-      {/* Affichage des nouvelles affiches proposées */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 14,
-        padding: 12, background: C.bg + "60", borderRadius: 12 }}>
-        <ProposalSide work={pendingChange.new_start} highlight={pendingChange.target === "start" || pendingChange.target === "both"} themeColors={C} />
-        <div style={{ fontSize: 18, color: C.inkMute, fontWeight: 700 }}>↔</div>
-        <ProposalSide work={pendingChange.new_end} align="right" highlight={pendingChange.target === "end" || pendingChange.target === "both"} themeColors={C} />
-      </div>
-
-      {/* Boutons Accepter / Refuser */}
-      <div style={{ display: "flex", gap: 8 }}>
-        <button onClick={onRefuse} disabled={!!loadingAction}
-          style={{ ...glass, border: `1px solid ${C.hairline}`,
-            borderRadius: 999, padding: "10px 16px", flex: 1,
-            fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase",
-            cursor: loadingAction ? "not-allowed" : "pointer",
-            fontFamily: "inherit", fontWeight: 700, color: C.ink,
-            opacity: loadingAction ? 0.5 : 1 }}>
-          {loadingAction === "refuse" ? <>Refus<AnimatedDots /></> : "Refuser"}
-        </button>
-        <button onClick={onAccept} disabled={!!loadingAction}
-          style={{ background: C.green, color: "#fff", border: "none",
-            borderRadius: 999, padding: "10px 16px", flex: 1,
-            fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase",
-            cursor: loadingAction ? "not-allowed" : "pointer",
-            fontFamily: "inherit", fontWeight: 700,
-            boxShadow: `0 4px 14px ${C.green}66`,
-            opacity: loadingAction ? 0.5 : 1 }}>
-          {loadingAction === "accept" ? <>Validation<AnimatedDots color="#fff" /></> : "Accepter"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function ProposalSide({ work, align = "left", highlight, themeColors }) {
-  const C = themeColors;
-  return (
-    <div style={{ textAlign: align, maxWidth: 110, display: "flex", flexDirection: "column",
-      alignItems: align === "right" ? "flex-end" : "flex-start", flex: 1 }}>
-      <div style={{ position: "relative" }}>
-        <Poster movie={work} size={56} rounded={8} themeColors={C} />
-        {highlight && (
-          <div style={{ position: "absolute", inset: -3, borderRadius: 11,
-            border: `2px solid ${C.versusOpponent}`,
-            pointerEvents: "none" }} />
-        )}
-      </div>
-      <div style={{ fontWeight: 700, fontSize: 11, lineHeight: 1.15, letterSpacing: -0.2,
-        color: C.ink, marginTop: 6,
-        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>{work.title}</div>
-      <div style={{ fontSize: 10, color: C.inkMute, marginTop: 1, fontWeight: 500 }}>{work.year}</div>
-    </div>
-  );
-}
 
 function PlayerRow({ slot, name, isMe, themeColors }) {
   const C = themeColors;
