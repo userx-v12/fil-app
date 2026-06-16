@@ -689,6 +689,17 @@ async function resetMatchPlayersForNewRound(matchId) {
   if (error) throw error;
 }
 
+// Marque la manche comme terminée côté salon (sans ça, le statut reste "playing" pour toujours
+// et la revanche ne peut jamais réclamer le reset, qui exige status="finished").
+async function finishMatch(matchId) {
+  const { error } = await supabase
+    .from("matches")
+    .update({ status: "finished", finished_at: new Date().toISOString() })
+    .eq("id", matchId)
+    .eq("status", "playing");
+  if (error) throw error;
+}
+
 // Génère un nouveau défi (ou une partie) en fonction du target :
 // - "start" : nouveau départ, garde l'arrivée actuelle
 // - "end"   : nouvelle arrivée, garde le départ actuel
@@ -749,11 +760,12 @@ async function applyNewDefi(matchId, { start, end, optimalSteps, difficulty }) {
 
 // Bascule mon "OK pour moi" sur le défi en cours (mode standard) — togglable librement.
 async function setReadySlot(matchId, currentPendingChange, mySlot, ready) {
-  const current = (currentPendingChange && currentPendingChange.readySlots) || [];
+  const base = currentPendingChange || {};
+  const current = base.readySlots || [];
   const next = ready ? Array.from(new Set([...current, mySlot])) : current.filter(s => s !== mySlot);
   const { error } = await supabase
     .from("matches")
-    .update({ pending_change: next.length ? { readySlots: next } : null })
+    .update({ pending_change: { ...base, readySlots: next } })
     .eq("id", matchId);
   if (error) throw error;
 }
@@ -1870,7 +1882,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.21</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.22</div>
     </div>
   );
 }
@@ -3356,6 +3368,8 @@ function VersusEndScreen({
     else if (iLost) incrementVersusLosses();
     if (!myAbandoned && optimalSteps !== null && mySteps <= optimalSteps) incVersusOptimal();
     addVersusHints(myHintsUsed);
+    // Marque le salon "finished" (sinon la revanche ne peut jamais réclamer le reset)
+    finishMatch(matchId).catch(() => {});
     onRoundResult?.(iWon ? "me" : iLost ? "opponent" : null);
   }, [bothDone]);
 
@@ -4221,6 +4235,7 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
   const [pickSearchResults, setPickSearchResults] = useState([]);
   const [pickSearching, setPickSearching] = useState(false);
   const [pickSaving, setPickSaving] = useState(false);
+  const [myPickWork, setMyPickWork] = useState(null);
   const [opponentPickWork, setOpponentPickWork] = useState(null);
   // Pseudo éditable (créateur uniquement)
   const [pseudoInput, setPseudoInput] = useState("");
@@ -4248,9 +4263,11 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
   // Mode standard : défi "vierge" tant que personne n'a tiré de film (placeholder start === end)
   const noDefiYet = !match?.custom_mode && match?.start_id != null &&
     match.start_id === match.end_id && match.start_type === match.end_type;
-  const readySlots = (!match?.custom_mode && pendingChange?.readySlots) || [];
+  // "OK pour moi" : utilisé en standard (sur le défi affiché) ET en sur-mesure (une fois les 2 films choisis)
+  const readySlots = pendingChange?.readySlots || [];
   const iAmReady = !!mySlot && readySlots.includes(mySlot);
   const opponentReady = !!opponent && readySlots.includes(opponent.slot);
+  const bothPicked = !!(pendingChange?.startPick && pendingChange?.endPick);
 
   // Charge initial + subscribe realtime
   useEffect(() => {
@@ -4345,6 +4362,17 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
     return () => clearTimeout(handle);
   }, [pickSearch, myRole, myPick]);
 
+  // Mode sur-mesure : fetch l'affiche de mon propre choix (pending_change ne stocke que id/type,
+  // il faut re-fetch le titre/affiche pour l'afficher correctement)
+  useEffect(() => {
+    if (!myPick?.id) { setMyPickWork(null); return; }
+    let cancelled = false;
+    getWorksByPairs([{ id: myPick.id, type: myPick.type }])
+      .then(works => { if (!cancelled && works[0]) setMyPickWork(works[0]); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [myPick?.id, myPick?.type]);
+
   // Mode sur-mesure : fetch l'affiche du film choisi par l'adversaire (pour l'afficher flouté)
   useEffect(() => {
     if (!opponentPick?.id) { setOpponentPickWork(null); return; }
@@ -4368,19 +4396,20 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
     return () => { cancelled = true; };
   }, [match?.start_id, match?.start_type, match?.end_id, match?.end_type, bothReady]);
 
-  // Auto-start : dès que le défi est validé par les 2 joueurs (OK pour moi en standard,
-  // film choisi des 2 côtés en sur-mesure), n'importe quel client lance la partie.
+  // Auto-start : dès que le défi est validé par les 2 joueurs (OK pour moi des 2 côtés, après
+  // avoir choisi le défi standard ou les films en sur-mesure), n'importe quel client lance la partie.
   // Claim atomique dans startMatch (WHERE status='waiting') : un seul lancement effectif.
   useEffect(() => {
     if (!match || match.status !== "waiting") return;
+    const pc = match.pending_change;
+    const rs = pc?.readySlots || [];
+    const bothOk = rs.includes(1) && rs.includes(2);
     let ready = false, customStart = null, customEnd = null;
     if (match.custom_mode) {
-      const pc = match.pending_change;
-      if (pc?.startPick && pc?.endPick) { ready = true; customStart = pc.startPick; customEnd = pc.endPick; }
+      if (pc?.startPick && pc?.endPick && bothOk) { ready = true; customStart = pc.startPick; customEnd = pc.endPick; }
     } else {
-      const rs = match.pending_change?.readySlots || [];
       const hasDefi = match.start_id !== match.end_id || match.start_type !== match.end_type;
-      ready = hasDefi && rs.includes(1) && rs.includes(2);
+      ready = hasDefi && bothOk;
     }
     if (!ready) return;
     let cancelled = false;
@@ -4698,13 +4727,15 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
                   Tu choisis le {myRoleLabel}
                 </div>
                 {myPick ? (
-                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <Poster movie={myPick} size={44} rounded={6} themeColors={C} />
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 700, fontSize: 15, color: C.ink }}>{myPick.title}</div>
-                      <div style={{ fontSize: 11, color: C.inkMute }}>{myPick.year}</div>
+                  myPickWork ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                      <Poster movie={myPickWork} size={44} rounded={6} themeColors={C} />
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: 700, fontSize: 15, color: C.ink }}>{myPickWork.title}</div>
+                        <div style={{ fontSize: 11, color: C.inkMute }}>{myPickWork.year}</div>
+                      </div>
                     </div>
-                  </div>
+                  ) : <Spinner label="Chargement…" themeColors={C} />
                 ) : (
                   <>
                     <div style={{ ...glass, borderRadius: 12, padding: 6, marginBottom: 6 }}>
@@ -4759,6 +4790,27 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
                   </div>
                 )}
               </div>
+
+              {bothPicked && (
+                <>
+                  <div style={{ height: 1, background: C.hairline }} />
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                    <button onClick={handleToggleReady} disabled={togglingReady}
+                      style={{ ...(iAmReady ? glassDark : glass), borderRadius: 999, padding: "10px 18px",
+                        border: iAmReady ? "none" : `1px solid ${C.hairline}`,
+                        fontFamily: "inherit", fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
+                        cursor: togglingReady ? "not-allowed" : "pointer", opacity: togglingReady ? 0.6 : 1 }}>
+                      {iAmReady ? "✓ OK pour moi" : "OK pour moi"}
+                    </button>
+                    <div style={{ fontSize: 12, color: opponentReady ? C.green : C.inkMute, fontWeight: 600 }}>
+                      {opponentReady ? <>✓ {opponentName} est prêt</> : <>{opponentName}<AnimatedDots /></>}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "center", fontSize: 11, color: C.inkMute, marginTop: 4 }}>
+                    La partie démarre automatiquement dès que vous êtes prêts tous les deux.
+                  </div>
+                </>
+              )}
             </div>
           )
         ) : (
