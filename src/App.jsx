@@ -592,8 +592,9 @@ async function joinMatch(matchId, playerName, slot) {
   return data;
 }
 
-async function startMatch(matchId, victoryCondition = "hybrid", customEnd = null) {
-  const update = { status: "playing", started_at: new Date().toISOString(), victory_condition: victoryCondition };
+async function startMatch(matchId, victoryCondition = "hybrid", customStart = null, customEnd = null) {
+  const update = { status: "playing", started_at: new Date().toISOString(), victory_condition: victoryCondition, pending_change: null };
+  if (customStart) { update.start_id = customStart.id; update.start_type = customStart.type; }
   if (customEnd) { update.end_id = customEnd.id; update.end_type = customEnd.type; }
   const { data, error } = await supabase
     .from("matches")
@@ -605,16 +606,20 @@ async function startMatch(matchId, victoryCondition = "hybrid", customEnd = null
   return data;
 }
 
-async function updateCustomStartFilm(matchId, film) {
-  const { error } = await supabase.from("matches")
-    .update({ start_id: film.id, start_type: film.type })
-    .eq("id", matchId);
+// Récupère une œuvre quelconque pour servir de placeholder start/end tant que les joueurs
+// n'ont pas encore choisi leurs films en mode personnalisé.
+async function getPlaceholderWork() {
+  const { data, error } = await supabase.from("works").select("id, type").limit(1).single();
   if (error) throw error;
+  return data;
 }
 
-async function saveCustomInviteeFilm(matchId, film) {
+// Mode personnalisé : enregistre le choix de film d'un joueur (départ ou arrivée selon son rôle tiré au hasard)
+// en fusionnant avec le pending_change courant pour ne pas écraser le choix de l'autre joueur.
+async function saveCustomPick(matchId, currentPendingChange, role, film) {
+  const updated = { ...(currentPendingChange || {}), [role]: { id: film.id, type: film.type } };
   const { error } = await supabase.from("matches")
-    .update({ pending_change: { custom_end_id: film.id, custom_end_type: film.type, invitee_ready: true } })
+    .update({ pending_change: updated })
     .eq("id", matchId);
   if (error) throw error;
 }
@@ -642,56 +647,18 @@ async function finishPlayer(matchPlayerId, { finalSteps, finalTimeMs, abandoned,
     .eq("id", matchPlayerId);
 }
 
-// Crée un nouveau match comme "revanche" du précédent, et marque l'ancien avec rematch_code
-async function createRematch({ previousMatchId, startWork, endWork, optimalSteps, difficulty }) {
-  const newMatch = await createMatch({ startWork, endWork, optimalSteps, difficulty });
-  await supabase
-    .from("matches")
-    .update({ rematch_code: newMatch.code })
-    .eq("id", previousMatchId);
-  return newMatch;
-}
-
-// Régénère le défi d'un match existant (start/end/optimal_steps/difficulty) et lance la partie
-// en un seul UPDATE atomique. Utilisé quand le créateur clique "Démarrer" depuis le lobby
-// (les filtres du lobby ont pu changer entre la création initiale et le lancement).
-async function regenerateAndStartMatch(matchId, prefs, difficulty) {
-  const isRandomMode = difficulty === "random";
-  let target = difficulty;
-  if (isRandomMode) target = pickWeightedDifficulty();
-  const targetRange = DIFFICULTIES[target]?.range;
-  const forHard = target === "hard";
-
-  let chosen = null;
-  let lastAttempt = null;
-  for (let attempt = 0; attempt < 10; attempt++) {
-    const { start, end } = await pickRandomPair(prefs, forHard);
-    const optimal = await findOptimalPath(start, end, 5);
-    if (!optimal || optimal.length < 3) continue;
-    const steps = Math.floor((optimal.length - 1) / 2);
-    lastAttempt = { start, end, steps };
-    if (!targetRange || (steps >= targetRange[0] && steps <= targetRange[1])) {
-      chosen = lastAttempt; break;
-    }
-  }
-  if (!chosen) chosen = lastAttempt;
-  if (!chosen) throw new Error("Aucun défi trouvé avec ces filtres.");
-
-  // Single UPDATE atomique pour éviter les races avec les autres clients
-  const { data, error } = await supabase
-    .from("matches")
+// Mode revanche : reset des champs de progression de tous les joueurs d'un match pour une nouvelle manche.
+async function resetMatchPlayersForNewRound(matchId) {
+  const { error } = await supabase
+    .from("match_players")
     .update({
-      start_id: chosen.start.id, start_type: chosen.start.type,
-      end_id: chosen.end.id, end_type: chosen.end.type,
-      optimal_steps: chosen.steps, difficulty: target,
-      status: "playing",
-      started_at: new Date().toISOString(),
+      current_path: null, current_steps: 0,
+      finished: false, abandoned: false,
+      final_steps: null, final_time_ms: null,
+      hints_used: 0, finished_at: null,
     })
-    .eq("id", matchId)
-    .select()
-    .single();
+    .eq("match_id", matchId);
   if (error) throw error;
-  return data;
 }
 
 // Génère un nouveau défi (ou une partie) en fonction du target :
@@ -1299,7 +1266,7 @@ export default function App() {
   const [gamesPlayed, setGamesPlayed] = useState(loadGamesPlayed);
   const [showInfo, setShowInfo] = useState(false);
   const [versusCode, setVersusCode] = useState(null); // Code de partie Versus en cours
-  const [versusContext, setVersusContext] = useState(null); // Contexte du jeu Versus { matchId, code, myPlayerId, mySlot, myName, opponentName, opponentPlayerId }
+  const [versusContext, setVersusContext] = useState(null); // Contexte du jeu Versus { matchId, code, myPlayerId, mySlot, myName, opponentName, opponentPlayerId, customMode }
   const [versusPrefs, setVersusPrefs] = useState(() => ({ ...DEFAULT_PREFS, victoryCondition: "hybrid", customMode: false })); // Prefs Versus indépendantes des prefs globales, partagées entre Create et Lobby
   const [installPrompt, setInstallPrompt] = useState(null);  // Android : event beforeinstallprompt
   const [installType, setInstallType] = useState(null);      // null | "android" | "ios"
@@ -1580,6 +1547,7 @@ export default function App() {
         opponentName: opp?.player_name || "Adversaire",
         opponentPlayerId: opp?.id || null,
         victoryCondition: match.victory_condition || "hybrid",
+        customMode: !!match.custom_mode,
       });
       setGameKey(k => k + 1);
       setScreen("game");
@@ -1599,107 +1567,83 @@ export default function App() {
     setScreen("menu");
   }
 
-  // Lance une revanche : créateur du match précédent → crée un nouveau match avec mêmes prefs et l'autre est invité
+  // Lance une revanche : reset en place du même match (même code, même salon).
   // Revanche bilatérale : n'importe quel joueur peut cliquer "Revanche".
-  // Premier qui clique gagne (atomic claim sur rematch_code), l'autre rejoint automatiquement.
+  // Premier qui clique gagne (atomic claim sur status), l'autre rejoint juste le même salon.
   async function requestRematch(previousMatch) {
     setLoadingChallenge(true);
     setLoadingLabel("Préparation de la revanche…");
     setError(null);
     try {
-      // 1. Vérifie l'état actuel : peut-être que l'autre a déjà créé la revanche
+      // 1. Vérifie l'état actuel : peut-être que l'autre a déjà reset le salon
       const { data: refreshed } = await supabase
-        .from("matches").select("rematch_code").eq("id", previousMatch.id).maybeSingle();
-      if (refreshed?.rematch_code) {
-        return await joinExistingRematch(refreshed.rematch_code);
-      }
-
-      // 2. Pas encore créée : on tente de la créer
-      const isRandomMode = prefs.difficulty === "random";
-      let target = prefs.difficulty;
-      if (isRandomMode) target = pickWeightedDifficulty();
-      const targetRange = DIFFICULTIES[target]?.range;
-      const forHard = target === "hard";
-
-      let chosen = null;
-      let lastAttempt = null;
-      for (let attempt = 0; attempt < 10; attempt++) {
-        const { start, end } = await pickRandomPair(prefs, forHard);
-        const optimal = await findOptimalPath(start, end, 5);
-        if (!optimal || optimal.length < 3) continue;
-        const steps = Math.floor((optimal.length - 1) / 2);
-        lastAttempt = { start, end, steps };
-        if (!targetRange || (steps >= targetRange[0] && steps <= targetRange[1])) {
-          chosen = lastAttempt; break;
-        }
-      }
-      if (!chosen) chosen = lastAttempt;
-      if (!chosen) throw new Error("Aucun défi trouvé pour la revanche.");
-
-      // 3. Crée le nouveau match
-      const newMatch = await createMatch({
-        startWork: chosen.start, endWork: chosen.end,
-        optimalSteps: chosen.steps, difficulty: target,
-        victoryCondition: versusPrefs.victoryCondition || "hybrid",
-      });
-
-      // 4. Tente de poser le rematch_code sur l'ancien match de façon atomique
-      const { data: claimed } = await supabase
-        .from("matches")
-        .update({ rematch_code: newMatch.code })
-        .eq("id", previousMatch.id)
-        .is("rematch_code", null)
-        .select();
-
-      if (claimed && claimed.length > 0) {
-        // On a gagné la course → on devient le créateur (slot 1)
-        const myName = getStoredPlayerName() || "Joueur";
-        await joinMatch(newMatch.id, myName, 1);
-
-        setVersusCode(newMatch.code);
-        setVersusInURL(newMatch.code);
+        .from("matches").select("status").eq("id", previousMatch.id).maybeSingle();
+      if (refreshed?.status === "waiting") {
         setVersusContext(null);
         setChallenge(null);
         setScreen("versus-lobby");
-      } else {
-        // L'autre joueur nous a doublés : on rejoint sa revanche (notre match créé devient orphelin, pas grave)
-        const { data: winner } = await supabase
-          .from("matches").select("rematch_code").eq("id", previousMatch.id).maybeSingle();
-        if (winner?.rematch_code) {
-          await joinExistingRematch(winner.rematch_code);
-        } else {
-          throw new Error("Impossible de rejoindre la revanche.");
-        }
+        return;
       }
+
+      const isCustom = !!versusContext?.customMode;
+      let resetFields;
+
+      if (isCustom) {
+        // Mode personnalisé : pas de film choisi ici, juste le reset.
+        // Le tirage des rôles départ/arrivée se fait dans le lobby une fois les 2 joueurs prêts.
+        resetFields = { pending_change: null, status: "waiting", started_at: null, finished_at: null };
+      } else {
+        // Mode standard : tire un nouveau couple aléatoire selon les prefs courantes
+        const isRandomMode = prefs.difficulty === "random";
+        let target = prefs.difficulty;
+        if (isRandomMode) target = pickWeightedDifficulty();
+        const targetRange = DIFFICULTIES[target]?.range;
+        const forHard = target === "hard";
+
+        let chosen = null;
+        let lastAttempt = null;
+        for (let attempt = 0; attempt < 10; attempt++) {
+          const { start, end } = await pickRandomPair(prefs, forHard);
+          const optimal = await findOptimalPath(start, end, 5);
+          if (!optimal || optimal.length < 3) continue;
+          const steps = Math.floor((optimal.length - 1) / 2);
+          lastAttempt = { start, end, steps };
+          if (!targetRange || (steps >= targetRange[0] && steps <= targetRange[1])) {
+            chosen = lastAttempt; break;
+          }
+        }
+        if (!chosen) chosen = lastAttempt;
+        if (!chosen) throw new Error("Aucun défi trouvé pour la revanche.");
+
+        resetFields = {
+          start_id: chosen.start.id, start_type: chosen.start.type,
+          end_id: chosen.end.id, end_type: chosen.end.type,
+          optimal_steps: chosen.steps, difficulty: target,
+          pending_change: null, status: "waiting", started_at: null, finished_at: null,
+        };
+      }
+
+      // 2. Réclame le reset de façon atomique (premier arrivé gagne)
+      const { data: claimed } = await supabase
+        .from("matches")
+        .update(resetFields)
+        .eq("id", previousMatch.id)
+        .eq("status", "finished")
+        .select();
+
+      if (claimed && claimed.length > 0) {
+        await resetMatchPlayersForNewRound(previousMatch.id);
+      }
+      // Que la claim ait réussi ou non, le salon est maintenant en "waiting" → on y retourne.
+      setVersusContext(null);
+      setChallenge(null);
+      setScreen("versus-lobby");
     } catch (e) {
       console.error(e);
       setError(e.message);
     } finally {
       setLoadingChallenge(false);
     }
-  }
-
-  async function joinExistingRematch(rematchCode) {
-    const newMatch = await getMatchByCode(rematchCode);
-    if (!newMatch) throw new Error("Revanche introuvable.");
-
-    const myToken = getPlayerToken();
-    const players = await getMatchPlayers(newMatch.id);
-    const me = players.find(p => p.player_token === myToken);
-
-    if (!me) {
-      // On choisit le slot libre (l'autre a pris 1, on prend 2 ; sinon 1)
-      const usedSlots = players.map(p => p.slot);
-      const mySlot = usedSlots.includes(1) ? 2 : 1;
-      const myName = getStoredPlayerName() || "Joueur";
-      await joinMatch(newMatch.id, myName, mySlot);
-    }
-
-    setVersusCode(newMatch.code);
-    setVersusInURL(newMatch.code);
-    setVersusContext(null);
-    setChallenge(null);
-    setScreen("versus-lobby");
   }
 
   const showTopButtons = screen !== "game";
@@ -3365,7 +3309,7 @@ function VersusEndScreen({
   const bothDone = opponentFinished;
   const [opponentPath, setOpponentPath] = useState(null);
   const [opponentLiveHydrated, setOpponentLiveHydrated] = useState(null);
-  const [rematchCode, setRematchCode] = useState(null);
+  const [rematchReady, setRematchReady] = useState(false);
   const [requestingRematch, setRequestingRematch] = useState(false);
   const statsTrackedRef = useRef(false);
 
@@ -3463,15 +3407,14 @@ function VersusEndScreen({
     return () => { cancelled = true; };
   }, [bothDone, matchId, opponentName]);
 
-  // Realtime : écoute si le créateur lance une revanche (rematch_code dans le match)
+  // Realtime : écoute si l'adversaire a déjà reset le salon pour une revanche (status repasse à "waiting")
   useEffect(() => {
     if (!matchId) return;
     let cancelled = false;
 
-    // Fetch initial : peut-être que la revanche est déjà créée
     (async () => {
-      const { data } = await supabase.from("matches").select("rematch_code").eq("id", matchId).maybeSingle();
-      if (!cancelled && data?.rematch_code) setRematchCode(data.rematch_code);
+      const { data } = await supabase.from("matches").select("status").eq("id", matchId).maybeSingle();
+      if (!cancelled && data?.status === "waiting") setRematchReady(true);
     })();
 
     const channel = supabase.channel(`end-${matchId}`)
@@ -3479,7 +3422,7 @@ function VersusEndScreen({
         event: "UPDATE", schema: "public", table: "matches",
         filter: `id=eq.${matchId}`,
       }, (payload) => {
-        if (!cancelled && payload.new?.rematch_code) setRematchCode(payload.new.rematch_code);
+        if (!cancelled && payload.new?.status === "waiting") setRematchReady(true);
       })
       .subscribe();
 
@@ -3541,7 +3484,8 @@ function VersusEndScreen({
     if (requestingRematch) return;
     setRequestingRematch(true);
     try {
-      // onStartRematch et onJoinRematch pointent tous deux vers requestRematch en v5.11
+      // onStartRematch et onJoinRematch pointent tous deux vers requestRematch :
+      // reset en place du même salon, que ce soit nous qui réclamions ou l'adversaire qui l'a déjà fait.
       await onStartRematch({ id: matchId });
     } catch (e) {
       setRequestingRematch(false);
@@ -3685,22 +3629,22 @@ function VersusEndScreen({
 
         {/* REVANCHE BILATÉRALE :
             - Si personne n'a encore demandé : bouton "Revanche" pour les 2
-            - Si l'autre a déjà demandé (rematch_code apparu) : bouton vert "X propose une revanche !"
+            - Si l'autre a déjà reset le salon (status repassé à "waiting") : bouton vert "X propose une revanche !"
         */}
-        {bothDone && !rematchCode && (
+        {bothDone && !rematchReady && (
           <button onClick={handleRequestRematch} disabled={requestingRematch} style={btnPrimary}>
             {requestingRematch ? <>Préparation<AnimatedDots color="#fff" /></> : "Revanche"}
           </button>
         )}
 
-        {bothDone && rematchCode && !requestingRematch && (
+        {bothDone && rematchReady && !requestingRematch && (
           <button onClick={handleRequestRematch}
             style={{ ...btnPrimary, background: C.green, boxShadow: `0 4px 14px ${C.green}66` }}>
             {`${opponentName} propose une revanche !`}
           </button>
         )}
 
-        {bothDone && rematchCode && requestingRematch && (
+        {bothDone && rematchReady && requestingRematch && (
           <button disabled style={{ ...btnPrimary, background: C.green, opacity: 0.7 }}>
             <>Connexion<AnimatedDots color="#fff" /></>
           </button>
@@ -4142,29 +4086,13 @@ function VersusCreateScreen({ onBack, onCreated, versusPrefs, setVersusPrefs, th
   const [statusLabel, setStatusLabel] = useState("");
   const [errorMsg, setErrorMsg] = useState(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [customStartFilm, setCustomStartFilm] = useState(null);
-  const [customSearch, setCustomSearch] = useState("");
-  const [customSearchResults, setCustomSearchResults] = useState([]);
-  const [customSearching, setCustomSearching] = useState(false);
 
   const isCustomMode = !!versusPrefs.customMode;
-
-  useEffect(() => {
-    if (!isCustomMode || !customSearch || customSearch.trim().length < 2) { setCustomSearchResults([]); return; }
-    const handle = setTimeout(async () => {
-      setCustomSearching(true);
-      try { setCustomSearchResults(await searchMovies(customSearch, 20)); }
-      catch (e) { console.error(e); }
-      finally { setCustomSearching(false); }
-    }, 250);
-    return () => clearTimeout(handle);
-  }, [customSearch, isCustomMode]);
 
   async function handleCreate() {
     const name = playerName.trim();
     if (!name) { setErrorMsg("Choisis un pseudo."); return; }
     if (name.length > 20) { setErrorMsg("Pseudo trop long (20 max)."); return; }
-    if (isCustomMode && !customStartFilm) { setErrorMsg("Choisis ton film de départ."); return; }
     savePlayerName(name);
 
     setCreating(true);
@@ -4174,11 +4102,12 @@ function VersusCreateScreen({ onBack, onCreated, versusPrefs, setVersusPrefs, th
       let match;
       if (isCustomMode) {
         setStatusLabel("Création de la partie…");
-        // En mode personnalisé, le créateur choisit son film de départ.
-        // L'invité choisira l'arrivée dans le lobby. On utilise start comme placeholder pour end.
+        // En mode personnalisé, les rôles (départ/arrivée) et les films sont choisis
+        // par les 2 joueurs ensemble dans le lobby. On crée le match avec un placeholder.
+        const placeholder = await getPlaceholderWork();
         match = await createMatch({
-          startWork: customStartFilm,
-          endWork: customStartFilm,
+          startWork: placeholder,
+          endWork: placeholder,
           optimalSteps: 0,
           difficulty: "custom",
           victoryCondition: versusPrefs.victoryCondition || "hybrid",
@@ -4275,7 +4204,7 @@ function VersusCreateScreen({ onBack, onCreated, versusPrefs, setVersusPrefs, th
           {[{ key: false, label: "Standard" }, { key: true, label: "Personnalisé" }].map(({ key, label }) => {
             const active = isCustomMode === key;
             return (
-              <button key={String(key)} onClick={() => { setVersusPrefs(p => ({ ...p, customMode: key })); setCustomStartFilm(null); setCustomSearch(""); }} disabled={creating}
+              <button key={String(key)} onClick={() => setVersusPrefs(p => ({ ...p, customMode: key }))} disabled={creating}
                 style={{ flex: 1, padding: "10px 6px", borderRadius: 999, border: "none",
                   background: active ? C.ink : "transparent", color: active ? C.bg : C.ink,
                   fontFamily: "inherit", fontSize: 12, fontWeight: 700,
@@ -4285,52 +4214,10 @@ function VersusCreateScreen({ onBack, onCreated, versusPrefs, setVersusPrefs, th
             );
           })}
         </div>
-        {isCustomMode && <div style={{ fontSize: 11, color: C.inkMute, marginTop: 6, fontWeight: 500 }}>Tu choisis ton film de départ · L'adversaire choisira l'arrivée</div>}
+        {isCustomMode && <div style={{ fontSize: 11, color: C.inkMute, marginTop: 6, fontWeight: 500 }}>Les rôles (départ/arrivée) seront tirés au hasard, et chacun choisira son film dans le salon</div>}
       </div>
 
-      {isCustomMode ? (
-        /* Mode personnalisé : picker de film */
-        <div style={{ marginBottom: 18 }}>
-          <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 10 }}>Ton film de départ</div>
-          {customStartFilm ? (
-            <div style={{ ...glass, borderRadius: 16, padding: "12px 14px", display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
-              <Poster movie={customStartFilm} size={44} rounded={6} themeColors={C} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontWeight: 700, fontSize: 15, letterSpacing: -0.3, color: C.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{customStartFilm.title}</div>
-                <div style={{ fontSize: 11, color: C.inkMute, fontWeight: 500 }}>{customStartFilm.year}</div>
-              </div>
-              <button onClick={() => { setCustomStartFilm(null); }} disabled={creating}
-                style={{ background: "transparent", border: "none", color: C.inkSoft, fontSize: 16, cursor: "pointer", padding: 4 }}>✕</button>
-            </div>
-          ) : null}
-          <div style={{ ...glass, borderRadius: 14, padding: 6, marginBottom: 6 }}>
-            <input value={customSearch} onChange={(e) => setCustomSearch(e.target.value)}
-              placeholder="Rechercher un film ou une série…" disabled={creating}
-              style={{ width: "100%", background: "transparent", border: "none", outline: "none",
-                padding: "9px 10px", fontSize: 14, fontFamily: "inherit", color: C.ink, fontWeight: 500 }} />
-          </div>
-          {customSearch.length >= 2 && (
-            <div style={{ ...glass, borderRadius: 14, padding: 6, maxHeight: 260, overflowY: "auto" }}>
-              {customSearching && <Spinner label="Recherche" themeColors={C} />}
-              {!customSearching && customSearchResults.length === 0 && (
-                <div style={{ padding: 20, fontSize: 13, color: C.inkSoft, textAlign: "center" }}>Aucun résultat.</div>
-              )}
-              {!customSearching && customSearchResults.map(m => (
-                <button key={`${m.id}:${m.type}`} onClick={() => { setCustomStartFilm(m); setCustomSearch(""); }}
-                  style={{ background: C.cardBg2, border: "none", padding: "8px 10px", textAlign: "left",
-                    cursor: "pointer", display: "flex", alignItems: "center", gap: 10,
-                    fontFamily: "inherit", borderRadius: 10, width: "100%" }}>
-                  <Poster movie={m} size={32} rounded={5} themeColors={C} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: C.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.title}</div>
-                    <div style={{ fontSize: 10, color: C.inkMute }}>{m.year}{isTv(m) ? " · série" : ""}</div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      ) : (
+      {!isCustomMode && (
         <>
           <div style={{ marginBottom: 18 }}>
             <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 10 }}>Mode</div>
@@ -4431,13 +4318,13 @@ function VersusCreateScreen({ onBack, onCreated, versusPrefs, setVersusPrefs, th
         </div>
       )}
 
-      <button onClick={handleCreate} disabled={creating || !playerName.trim() || (isCustomMode && !customStartFilm)}
+      <button onClick={handleCreate} disabled={creating || !playerName.trim()}
         style={{ ...glassDark, borderRadius: 999, padding: "14px 22px",
           fontSize: 13, letterSpacing: 1.3, textTransform: "uppercase",
-          cursor: (creating || !playerName.trim() || (isCustomMode && !customStartFilm)) ? "not-allowed" : "pointer",
+          cursor: (creating || !playerName.trim()) ? "not-allowed" : "pointer",
           fontFamily: "inherit", fontWeight: 700,
           border: "none", width: "100%",
-          opacity: (creating || !playerName.trim() || (isCustomMode && !customStartFilm)) ? 0.4 : 1 }}>
+          opacity: (creating || !playerName.trim()) ? 0.4 : 1 }}>
         {creating ? <>Création<AnimatedDots /></> : "Lancer la partie"}
       </button>
     </div>
@@ -4658,13 +4545,11 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
   const [countdown, setCountdown] = useState(null); // null | 3 | 2 | 1 | 0
   const startedRef = useRef(false);
   const matchToStartRef = useRef(null);
-  // États pour le mode personnalisé
-  const [customCreatorFilm, setCustomCreatorFilm] = useState(null); // film de départ du créateur (hydraté)
-  const [customInviteeFilm, setCustomInviteeFilm] = useState(null); // film choisi par l'invité (local)
-  const [customSearch, setCustomSearch] = useState("");
-  const [customSearchResults, setCustomSearchResults] = useState([]);
-  const [customSearching, setCustomSearching] = useState(false);
-  const [customSaving, setCustomSaving] = useState(false);
+  // États pour le mode personnalisé : recherche/choix du film de mon rôle (départ ou arrivée, tiré au hasard)
+  const [pickSearch, setPickSearch] = useState("");
+  const [pickSearchResults, setPickSearchResults] = useState([]);
+  const [pickSearching, setPickSearching] = useState(false);
+  const [pickSaving, setPickSaving] = useState(false);
 
   const myToken = useMemo(() => getPlayerToken(), []);
   const me = players.find(p => p.player_token === myToken);
@@ -4675,6 +4560,15 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
   const mySlot = me?.slot;
   const iAmProposer = pendingChange && mySlot && pendingChange.proposed_by_slot === mySlot;
   const opponentName = opponent?.player_name || "Adversaire";
+  // Mode personnalisé : rôle tiré au hasard (qui choisit le départ, qui choisit l'arrivée)
+  const isPickingPhase = !!match?.custom_mode && pendingChange?.phase === "picking";
+  const myRole = isPickingPhase
+    ? (pendingChange.startSlot === mySlot ? "startPick" : pendingChange.endSlot === mySlot ? "endPick" : null)
+    : null;
+  const opponentRole = myRole === "startPick" ? "endPick" : myRole === "endPick" ? "startPick" : null;
+  const myPick = myRole ? pendingChange?.[myRole] : null;
+  const opponentPick = opponentRole ? pendingChange?.[opponentRole] : null;
+  const myRoleLabel = myRole === "startPick" ? "départ" : "arrivée";
 
   // Charge initial + subscribe realtime
   useEffect(() => {
@@ -4693,16 +4587,6 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
         const ps = await getMatchPlayers(m.id);
         if (cancelled) return;
         setPlayers(ps);
-
-        // Mode personnalisé : hydrater le film de départ du créateur (visible uniquement par lui)
-        if (m.custom_mode && m.start_id) {
-          const myTok = getPlayerToken();
-          const mySlotPs = ps.find(p => p.player_token === myTok);
-          if (mySlotPs?.slot === 1) {
-            const works = await getWorksByPairs([{ id: m.start_id, type: m.start_type }]);
-            if (!cancelled && works[0]) setCustomCreatorFilm(works[0]);
-          }
-        }
 
         // Realtime : écoute les changements sur match_players et matches
         channel = supabase.channel(`match-${m.id}`)
@@ -4730,31 +4614,41 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
     };
   }, [code]);
 
-  // Charge les œuvres du défi pour affichage. Gating sur bothReady : les deux joueurs
-  // découvrent les affiches au même moment, dès que la partie est au complet.
-  // Mode personnalisé : recherche de film pour l'invité
+  // Mode personnalisé : dès que les 2 joueurs sont là pour une manche fraîche (pas de pending_change),
+  // tire au hasard qui choisit le départ et qui choisit l'arrivée. Claim atomique : premier arrivé gagne,
+  // l'autre reçoit le résultat via l'écho realtime.
   useEffect(() => {
-    if (!match?.custom_mode || iAmCreator) return;
-    if (!customSearch || customSearch.trim().length < 2) { setCustomSearchResults([]); return; }
+    if (!match?.custom_mode || !bothReady || match.status !== "waiting" || match.pending_change) return;
+    let cancelled = false;
+    (async () => {
+      const startSlot = Math.random() < 0.5 ? 1 : 2;
+      const endSlot = startSlot === 1 ? 2 : 1;
+      const { data } = await supabase
+        .from("matches")
+        .update({ pending_change: { phase: "picking", startSlot, endSlot } })
+        .eq("id", match.id)
+        .is("pending_change", null)
+        .select();
+      if (!cancelled && data && data.length > 0) setMatch(data[0]);
+    })();
+    return () => { cancelled = true; };
+  }, [match?.custom_mode, bothReady, match?.status, match?.pending_change, match?.id]);
+
+  // Mode personnalisé : recherche de film pour le joueur en train de choisir son rôle (départ ou arrivée)
+  useEffect(() => {
+    if (!myRole || myPick) { setPickSearchResults([]); return; }
+    if (!pickSearch || pickSearch.trim().length < 2) { setPickSearchResults([]); return; }
     const handle = setTimeout(async () => {
-      setCustomSearching(true);
-      try { setCustomSearchResults(await searchMovies(customSearch, 20)); }
+      setPickSearching(true);
+      try { setPickSearchResults(await searchMovies(pickSearch, 20)); }
       catch (e) { console.error(e); }
-      finally { setCustomSearching(false); }
+      finally { setPickSearching(false); }
     }, 250);
     return () => clearTimeout(handle);
-  }, [customSearch, match?.custom_mode, iAmCreator]);
+  }, [pickSearch, myRole, myPick]);
 
-  // Mode personnalisé : rafraîchir customCreatorFilm si le créateur change son film de départ
-  useEffect(() => {
-    if (!match?.custom_mode || !iAmCreator || !match?.start_id) return;
-    let cancelled = false;
-    getWorksByPairs([{ id: match.start_id, type: match.start_type }])
-      .then(works => { if (!cancelled && works[0]) setCustomCreatorFilm(works[0]); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [match?.start_id, match?.start_type, match?.custom_mode, iAmCreator]);
-
+  // Charge les œuvres du défi pour affichage. Gating sur bothReady : les deux joueurs
+  // découvrent les affiches au même moment, dès que la partie est au complet.
   useEffect(() => {
     if (!match?.start_id || !match?.end_id || !bothReady || match?.custom_mode) return;
     let cancelled = false;
@@ -4790,17 +4684,32 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
     if (!match || starting) return;
     setStarting(true);
     try {
-      let customEnd = null;
+      let customStart = null, customEnd = null;
       if (match.custom_mode) {
         const pc = match.pending_change;
-        if (!pc?.invitee_ready) throw new Error("L'adversaire n'a pas encore choisi son film d'arrivée.");
-        customEnd = { id: pc.custom_end_id, type: pc.custom_end_type };
+        if (!pc?.startPick || !pc?.endPick) throw new Error("Les deux joueurs doivent avoir choisi leur film.");
+        customStart = pc.startPick;
+        customEnd = pc.endPick;
       }
-      await startMatch(match.id, versusPrefs?.victoryCondition || "hybrid", customEnd);
+      await startMatch(match.id, versusPrefs?.victoryCondition || "hybrid", customStart, customEnd);
     } catch (e) {
       console.error(e);
       setError(e.message || "Erreur au lancement.");
       setStarting(false);
+    }
+  }
+
+  // Mode personnalisé : j'enregistre mon choix de film (départ ou arrivée selon mon rôle tiré au hasard)
+  async function handleSelectPick(film) {
+    if (!myRole || myPick || pickSaving) return;
+    setPickSaving(true);
+    try {
+      await saveCustomPick(match.id, match.pending_change, myRole, film);
+    } catch (e) {
+      console.error(e);
+      setError(e.message || "Erreur lors de l'enregistrement du choix.");
+    } finally {
+      setPickSaving(false);
     }
   }
 
@@ -4993,99 +4902,73 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
         </div>
 
         {match?.custom_mode ? (
-          /* UI mode personnalisé */
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            {/* Créateur : voit son film de départ + statut invité */}
-            {iAmCreator ? (
-              <>
-                <div>
-                  <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, marginBottom: 8, fontWeight: 600 }}>Ton film de départ</div>
-                  {customCreatorFilm ? (
-                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                      <Poster movie={customCreatorFilm} size={44} rounded={6} themeColors={C} />
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontWeight: 700, fontSize: 15, color: C.ink }}>{customCreatorFilm.title}</div>
-                        <div style={{ fontSize: 11, color: C.inkMute }}>{customCreatorFilm.year}</div>
-                      </div>
+          /* UI mode personnalisé : choix symétrique, rôle (départ/arrivée) tiré au hasard */
+          !isPickingPhase ? (
+            <div style={{ padding: "16px 0", textAlign: "center", color: C.inkMute, fontSize: 13 }}>
+              <AnimatedDots />Tirage des rôles
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <div>
+                <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, marginBottom: 8, fontWeight: 600 }}>
+                  Tu choisis le {myRoleLabel}
+                </div>
+                {myPick ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <Poster movie={myPick} size={44} rounded={6} themeColors={C} />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 700, fontSize: 15, color: C.ink }}>{myPick.title}</div>
+                      <div style={{ fontSize: 11, color: C.inkMute }}>{myPick.year}</div>
                     </div>
-                  ) : <Spinner label="Chargement…" themeColors={C} />}
-                </div>
-                <div style={{ height: 1, background: C.hairline }} />
-                <div>
-                  <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, marginBottom: 8, fontWeight: 600 }}>Film d'arrivée de {opponentName || "l'adversaire"}</div>
-                  {match?.pending_change?.invitee_ready
-                    ? <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>✓ Film choisi — prêt à démarrer</div>
-                    : <div style={{ fontSize: 13, color: C.inkMute }}><AnimatedDots />En attente du choix</div>
-                  }
-                </div>
-              </>
-            ) : (
-              /* Invité : voit son picker d'arrivée */
-              <>
-                <div>
-                  <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, marginBottom: 8, fontWeight: 600 }}>Film de départ de {players.find(p => p.slot === 1)?.player_name || "l'adversaire"}</div>
-                  <div style={{ fontSize: 13, color: C.inkMute, fontStyle: "italic" }}>🎬 Mystère — révélé au lancement</div>
-                </div>
-                <div style={{ height: 1, background: C.hairline }} />
-                <div>
-                  <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, marginBottom: 8, fontWeight: 600 }}>Ton film d'arrivée</div>
-                  {customInviteeFilm ? (
-                    <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
-                      <Poster movie={customInviteeFilm} size={44} rounded={6} themeColors={C} />
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontWeight: 700, fontSize: 15, color: C.ink }}>{customInviteeFilm.title}</div>
-                        <div style={{ fontSize: 11, color: C.inkMute }}>{customInviteeFilm.year}</div>
-                      </div>
-                      <button onClick={() => setCustomInviteeFilm(null)} style={{ background: "transparent", border: "none", color: C.inkSoft, fontSize: 16, cursor: "pointer" }}>✕</button>
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ ...glass, borderRadius: 12, padding: 6, marginBottom: 6 }}>
+                      <input value={pickSearch} onChange={(e) => setPickSearch(e.target.value)}
+                        placeholder="Rechercher un film ou une série…"
+                        style={{ width: "100%", background: "transparent", border: "none", outline: "none",
+                          padding: "8px 10px", fontSize: 14, fontFamily: "inherit", color: C.ink, fontWeight: 500 }} />
                     </div>
-                  ) : null}
-                  {!customInviteeFilm && (
-                    <>
-                      <div style={{ ...glass, borderRadius: 12, padding: 6, marginBottom: 6 }}>
-                        <input value={customSearch} onChange={(e) => setCustomSearch(e.target.value)}
-                          placeholder="Rechercher un film ou une série…"
-                          style={{ width: "100%", background: "transparent", border: "none", outline: "none",
-                            padding: "8px 10px", fontSize: 14, fontFamily: "inherit", color: C.ink, fontWeight: 500 }} />
+                    {pickSearch.length >= 2 && (
+                      <div style={{ ...glass, borderRadius: 12, padding: 6, maxHeight: 240, overflowY: "auto" }}>
+                        {pickSearching && <Spinner label="Recherche" themeColors={C} />}
+                        {!pickSearching && pickSearchResults.length === 0 && (
+                          <div style={{ padding: 16, fontSize: 13, color: C.inkSoft, textAlign: "center" }}>Aucun résultat.</div>
+                        )}
+                        {!pickSearching && pickSearchResults.map(m => (
+                          <button key={`${m.id}:${m.type}`}
+                            onClick={() => { setPickSearch(""); handleSelectPick(m); }}
+                            disabled={pickSaving}
+                            style={{ background: C.cardBg2, border: "none", padding: "8px 10px", textAlign: "left",
+                              cursor: pickSaving ? "not-allowed" : "pointer", display: "flex", alignItems: "center", gap: 10,
+                              fontFamily: "inherit", borderRadius: 10, width: "100%" }}>
+                            <Poster movie={m} size={32} rounded={5} themeColors={C} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 13, fontWeight: 700, color: C.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.title}</div>
+                              <div style={{ fontSize: 10, color: C.inkMute }}>{m.year}{isTv(m) ? " · série" : ""}</div>
+                            </div>
+                          </button>
+                        ))}
                       </div>
-                      {customSearch.length >= 2 && (
-                        <div style={{ ...glass, borderRadius: 12, padding: 6, maxHeight: 240, overflowY: "auto" }}>
-                          {customSearching && <Spinner label="Recherche" themeColors={C} />}
-                          {!customSearching && customSearchResults.length === 0 && (
-                            <div style={{ padding: 16, fontSize: 13, color: C.inkSoft, textAlign: "center" }}>Aucun résultat.</div>
-                          )}
-                          {!customSearching && customSearchResults.map(m => (
-                            <button key={`${m.id}:${m.type}`}
-                              onClick={async () => {
-                                setCustomInviteeFilm(m);
-                                setCustomSearch("");
-                                setCustomSaving(true);
-                                try { await saveCustomInviteeFilm(match.id, m); }
-                                catch (e) { console.error(e); }
-                                finally { setCustomSaving(false); }
-                              }}
-                              style={{ background: C.cardBg2, border: "none", padding: "8px 10px", textAlign: "left",
-                                cursor: "pointer", display: "flex", alignItems: "center", gap: 10,
-                                fontFamily: "inherit", borderRadius: 10, width: "100%" }}>
-                              <Poster movie={m} size={32} rounded={5} themeColors={C} />
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ fontSize: 13, fontWeight: 700, color: C.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.title}</div>
-                                <div style={{ fontSize: 10, color: C.inkMute }}>{m.year}{isTv(m) ? " · série" : ""}</div>
-                              </div>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </>
-                  )}
-                  {customInviteeFilm && (
-                    <div style={{ fontSize: 12, color: customSaving ? C.inkMute : C.green, fontWeight: 600 }}>
-                      {customSaving ? <>Enregistrement<AnimatedDots /></> : "✓ Choix enregistré"}
-                    </div>
-                  )}
+                    )}
+                    {pickSaving && (
+                      <div style={{ fontSize: 12, color: C.inkMute, fontWeight: 600, marginTop: 6 }}>Enregistrement<AnimatedDots /></div>
+                    )}
+                  </>
+                )}
+              </div>
+              <div style={{ height: 1, background: C.hairline }} />
+              <div>
+                <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, marginBottom: 8, fontWeight: 600 }}>
+                  {opponentName} choisit le {myRoleLabel === "départ" ? "arrivée" : "départ"}
                 </div>
-              </>
-            )}
-          </div>
+                {opponentPick
+                  ? <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>✓ Film choisi — prêt à démarrer</div>
+                  : <div style={{ fontSize: 13, color: C.inkMute }}><AnimatedDots />En attente du choix</div>
+                }
+              </div>
+            </div>
+          )
         ) : (
           /* UI mode standard */
           !bothReady
@@ -5213,12 +5096,12 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
       {bothReady ? (
         iAmCreator ? (
           <button onClick={handleStart}
-            disabled={starting || (match?.custom_mode && !match?.pending_change?.invitee_ready)}
+            disabled={starting || (match?.custom_mode && !(pendingChange?.startPick && pendingChange?.endPick))}
             style={{ ...glassDark, borderRadius: 999, padding: "14px 22px",
               fontSize: 13, letterSpacing: 1.3, textTransform: "uppercase",
-              cursor: (starting || (match?.custom_mode && !match?.pending_change?.invitee_ready)) ? "not-allowed" : "pointer",
+              cursor: (starting || (match?.custom_mode && !(pendingChange?.startPick && pendingChange?.endPick))) ? "not-allowed" : "pointer",
               fontFamily: "inherit", fontWeight: 700, border: "none", width: "100%",
-              opacity: (starting || (match?.custom_mode && !match?.pending_change?.invitee_ready)) ? 0.4 : 1 }}>
+              opacity: (starting || (match?.custom_mode && !(pendingChange?.startPick && pendingChange?.endPick))) ? 0.4 : 1 }}>
             {starting ? <>Lancement<AnimatedDots /></> : "Démarrer le défi"}
           </button>
         ) : (
