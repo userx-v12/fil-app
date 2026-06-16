@@ -1882,7 +1882,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.23</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.24</div>
     </div>
   );
 }
@@ -4272,7 +4272,6 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
   const opponentRole = myRole === "startPick" ? "endPick" : myRole === "endPick" ? "startPick" : null;
   const myPick = myRole ? pendingChange?.[myRole] : null;
   const opponentPick = opponentRole ? pendingChange?.[opponentRole] : null;
-  const myRoleLabel = myRole === "startPick" ? "départ" : "arrivée";
 
   // Mode standard : défi "vierge" tant que personne n'a tiré de film (placeholder start === end)
   const noDefiYet = !match?.custom_mode && match?.start_id != null &&
@@ -4738,7 +4737,7 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               <div>
                 <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, marginBottom: 8, fontWeight: 600 }}>
-                  Tu choisis le {myRoleLabel}
+                  Ton film
                 </div>
                 {myPick ? (
                   myPickWork ? (
@@ -4789,18 +4788,24 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
               <div style={{ height: 1, background: C.hairline }} />
               <div>
                 <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, marginBottom: 8, fontWeight: 600 }}>
-                  {opponentName} choisit le {myRoleLabel === "départ" ? "arrivée" : "départ"}
+                  Film de {opponentName}
                 </div>
                 {!opponentPick ? (
                   <div style={{ fontSize: 13, color: C.inkMute }}><AnimatedDots />En attente du choix</div>
                 ) : (
-                  <div style={{ position: "relative", width: 44, height: 66, borderRadius: 6, overflow: "hidden", flexShrink: 0 }}>
-                    <div style={{ position: "absolute", inset: 0, filter: "blur(9px)", transform: "scale(1.2)" }}>
-                      <Poster movie={opponentPickWork || opponentPick} size={44} rounded={6} themeColors={C} />
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div style={{ position: "relative", width: 44, height: 66, borderRadius: 6, overflow: "hidden", flexShrink: 0 }}>
+                      <div style={{ position: "absolute", inset: 0, filter: "blur(9px)", transform: "scale(1.2)" }}>
+                        <Poster movie={opponentPickWork || opponentPick} size={44} rounded={6} themeColors={C} />
+                      </div>
+                      <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.25)",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        fontSize: 22, fontWeight: 800, color: "#fff", textShadow: "0 1px 6px rgba(0,0,0,0.7)" }}>?</div>
                     </div>
-                    <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.25)",
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      fontSize: 22, fontWeight: 800, color: "#fff", textShadow: "0 1px 6px rgba(0,0,0,0.7)" }}>?</div>
+                    <div style={{ flex: 1, userSelect: "none" }}>
+                      <div style={{ fontWeight: 700, fontSize: 15, color: C.ink, filter: "blur(4px)" }}>Titre mystère</div>
+                      <div style={{ fontSize: 11, color: C.inkMute, filter: "blur(4px)" }}>20XX</div>
+                    </div>
                   </div>
                 )}
               </div>
