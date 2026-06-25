@@ -566,7 +566,7 @@ async function getMatchPlayers(matchId) {
   return data || [];
 }
 
-async function joinMatch(matchId, playerName, slot) {
+async function joinMatch(matchId, playerName, slot, userId = null) {
   const token = getPlayerToken();
 
   // Si ce token a déjà rejoint ce match (refresh page), on retourne le joueur existant
@@ -578,14 +578,12 @@ async function joinMatch(matchId, playerName, slot) {
     .maybeSingle();
   if (existing) return existing;
 
+  const row = { match_id: matchId, slot, player_name: playerName, player_token: token };
+  if (userId) row.user_id = userId;
+
   const { data, error } = await supabase
     .from("match_players")
-    .insert({
-      match_id: matchId,
-      slot,
-      player_name: playerName,
-      player_token: token,
-    })
+    .insert(row)
     .select()
     .single();
   if (error) throw error;
@@ -1268,6 +1266,35 @@ function Rule({ num, text, C }) {
 // APP
 // =========================================================================
 
+// Lit les stats depuis localStorage et les pousse vers profiles (appelé après chaque partie)
+async function pushStatsToProfile(userId) {
+  if (!userId) return;
+  await supabase.from("profiles").update({
+    solo_games:     loadGamesPlayed(),
+    solo_easy:      loadSoloDiff("easy"),
+    solo_medium:    loadSoloDiff("medium"),
+    solo_hard:      loadSoloDiff("hard"),
+    solo_optimal:   loadSoloOptimal(),
+    solo_abandons:  loadSoloAbandons(),
+    solo_hints:     loadSoloHints(),
+    best_score:     loadBestSteps(),
+    versus_wins:    loadVersusWins(),
+    versus_losses:  loadVersusLosses(),
+    versus_optimal: loadVersusOptimal(),
+    versus_hints:   loadVersusHints(),
+  }).eq("id", userId);
+}
+
+// Crée la ligne profiles si elle n'existe pas encore, puis la retourne
+async function syncProfile(user) {
+  await supabase.from("profiles").upsert(
+    { id: user.id },
+    { onConflict: "id", ignoreDuplicates: true }
+  );
+  const { data } = await supabase.from("profiles").select("*").eq("id", user.id).single();
+  return data || null;
+}
+
 export default function App() {
   const [theme, setTheme] = useState(loadTheme);
   const themeColors = THEMES[theme];
@@ -1289,37 +1316,23 @@ export default function App() {
   const [versusPrefs, setVersusPrefs] = useState(() => ({ ...DEFAULT_PREFS })); // Prefs Versus indépendantes des prefs globales, partagées avec le Lobby (Mode/Difficulté/filtres avancés uniquement, le reste vit en DB)
   // Série de victoires consécutives en cours, en mémoire (pas de DB) — reset si on quitte le Versus
   const [versusStreak, setVersusStreak] = useState({ winner: null, count: 0 });
-  const [installPrompt, setInstallPrompt] = useState(null);  // Android : event beforeinstallprompt
-  const [installType, setInstallType] = useState(null);      // null | "android" | "ios"
-  const [showInstallPopup, setShowInstallPopup] = useState(false);
+  const [authUser, setAuthUser] = useState(null);   // Utilisateur Supabase connecté (ou null)
+  const [profile, setProfile] = useState(null);     // Ligne profiles correspondante
 
-  // PWA : capture le prompt Android, détecte iOS
   useEffect(() => {
-    const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
-    const isInStandalone = window.navigator.standalone === true;
-    if (isInStandalone) return;
-
-    if (isIos) { setInstallType("ios"); return; }
-
-    const handler = (e) => {
-      e.preventDefault();
-      setInstallPrompt(e);
-      setInstallType("android");
-    };
-    window.addEventListener("beforeinstallprompt", handler);
-    return () => window.removeEventListener("beforeinstallprompt", handler);
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      const u = session?.user ?? null;
+      setAuthUser(u);
+      if (u) syncProfile(u).then(setProfile);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      const u = session?.user ?? null;
+      setAuthUser(u);
+      if (u) syncProfile(u).then(setProfile);
+      else setProfile(null);
+    });
+    return () => subscription.unsubscribe();
   }, []);
-
-  function handleInstallClick() {
-    if (installPrompt) {
-      installPrompt.prompt();
-      installPrompt.userChoice.then(() => {
-        setInstallPrompt(null);
-        setInstallType(null);
-        setShowInstallPopup(false);
-      });
-    }
-  }
 
   useEffect(() => { savePrefs(prefs); }, [prefs]);
   useEffect(() => { document.body.style.background = C.bg; saveTheme(theme); }, [theme, C.bg]);
@@ -1594,7 +1607,7 @@ export default function App() {
         victoryCondition: "hybrid", customMode: false,
       });
       const name = getStoredPlayerName() || "Joueur";
-      await joinMatch(match.id, name, 1);
+      await joinMatch(match.id, name, 1, authUser?.id ?? null);
       setVersusCode(match.code);
       setVersusInURL(match.code);
       setScreen("versus-lobby");
@@ -1687,14 +1700,6 @@ export default function App() {
           <TopRoundButton position="left2" onClick={toggleTheme} title={theme === "light" ? "Mode sombre" : "Mode clair"} themeColors={C}>
             <ThemeIcon isLight={theme === "light"} color={C.ink} />
           </TopRoundButton>
-          {screen === "menu" && (
-            <TopRoundButton position="center" onClick={() => setShowInstallPopup(p => !p)} title="Ajouter à l'écran d'accueil" themeColors={C}>
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={C.ink} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 2v13M8 11l4 4 4-4"/>
-                <path d="M20 16v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2"/>
-              </svg>
-            </TopRoundButton>
-          )}
           <TopRoundButton position="right" onClick={() => setScreen("account")} title="Compte" themeColors={C}>
             <AccountIcon color={C.ink} />
           </TopRoundButton>
@@ -1732,6 +1737,7 @@ export default function App() {
               onJoinRematch={requestRematch}
               versusStreak={versusStreak}
               onVersusRoundResult={handleVersusRoundResult}
+              authUserId={authUser?.id ?? null}
               themeColors={C} glass={glass} glassDark={glassDark} theme={theme} />
       )}
       {screen === "custom" && <CustomScreen onBack={() => setScreen("menu")} onStart={startCustom}
@@ -1751,47 +1757,18 @@ export default function App() {
                                 initialCode={versusCode}
                                 onBack={() => { clearVersusFromURL(); setVersusCode(null); setScreen("menu"); }}
                                 onJoined={(code) => { setVersusCode(code); setVersusInURL(code); setScreen("versus-lobby"); }}
+                                authUserId={authUser?.id ?? null}
                                 themeColors={C} glass={glass} glassDark={glassDark} />}
       {screen === "options" && <OptionsScreen onBack={() => setScreen("menu")} prefs={prefs} setPrefs={setPrefs}
                                 themeColors={C} glass={glass} />}
-      {screen === "account" && <AccountScreen onBack={() => setScreen("menu")} themeColors={C} glass={glass} glassDark={glassDark}
-                                  gamesPlayed={gamesPlayed} />}
+      {screen === "account" && <AccountScreen onBack={() => setScreen("menu")} onOpenAuth={() => setScreen("auth")}
+                                  themeColors={C} glass={glass} glassDark={glassDark}
+                                  gamesPlayed={gamesPlayed} authUser={authUser} profile={profile}
+                                  onLogout={async () => { await supabase.auth.signOut(); setScreen("menu"); }} />}
+      {screen === "auth" && <AuthScreen onBack={() => setScreen("account")}
+                                  onSuccess={() => setScreen("account")}
+                                  themeColors={C} glass={glass} glassDark={glassDark} />}
 
-      {/* Popup PWA "Ajouter à l'écran d'accueil" */}
-      {showInstallPopup && (
-        <>
-          <div onClick={() => setShowInstallPopup(false)}
-            style={{ position: "fixed", inset: 0, zIndex: 290 }} />
-          <div style={{ position: "fixed", top: 62, left: "50%", transform: "translateX(-50%)",
-            zIndex: 300, width: "min(320px, calc(100vw - 32px))",
-            ...glass, borderRadius: 18, padding: 20, boxShadow: "0 8px 32px rgba(0,0,0,0.25)" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14 }}>
-              <img src="/icon-192.png" alt="" style={{ width: 48, height: 48, borderRadius: 12, flexShrink: 0 }} />
-              <div>
-                <div style={{ fontSize: 15, fontWeight: 800, color: C.ink, letterSpacing: -0.4 }}>Ajouter Fil</div>
-                <div style={{ fontSize: 12, color: C.inkSoft, marginTop: 2 }}>Accès rapide depuis ton écran d'accueil</div>
-              </div>
-            </div>
-            {installType === "android" ? (
-              <button onClick={handleInstallClick}
-                style={{ ...glassDark, width: "100%", borderRadius: 12, padding: "12px 0", border: "none",
-                  fontFamily: "inherit", fontSize: 12, letterSpacing: 1.2, textTransform: "uppercase",
-                  fontWeight: 700, cursor: "pointer", color: C.glassDarkInk }}>
-                Installer l'app
-              </button>
-            ) : (
-              <div style={{ fontSize: 13, color: C.ink, lineHeight: 1.6,
-                background: C.bg, borderRadius: 10, padding: "10px 14px",
-                border: `1px solid ${C.hairline}` }}>
-                {installType === "ios"
-                  ? <>Appuie sur <strong>⬆</strong> en bas de Safari,<br/>puis <strong>"Sur l'écran d'accueil"</strong></>
-                  : <>Dans Chrome, appuie sur <strong>⋮</strong> puis<br/><strong>"Ajouter à l'écran d'accueil"</strong></>
-                }
-              </div>
-            )}
-          </div>
-        </>
-      )}
     </Background>
   );
 }
@@ -2201,7 +2178,7 @@ function Star({ fill, size, color, emptyColor }) {
 // GAME
 // =========================================================================
 
-function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart, versusContext, onStartRematch, onJoinRematch, versusStreak, onVersusRoundResult, themeColors, glass, glassDark, theme }) {
+function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart, versusContext, onStartRematch, onJoinRematch, versusStreak, onVersusRoundResult, authUserId, themeColors, glass, glassDark, theme }) {
   const C = themeColors;
   const isVersus = !!versusContext;
   const [path, setPath] = useState([{ type: "movie", data: challenge.start }]);
@@ -2407,6 +2384,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
           ? Math.max(0, Math.floor((challenge.optimal.length - 1) / 2)) : null;
         if (optSteps !== null && finalSteps <= optSteps) incSoloOptimal();
         addSoloHints(hintsUsed);
+        pushStatsToProfile(authUserId).catch(() => {});
       }
     }
   }, [isAtEnd, finished, onFinished, isVersus, versusContext, path.length, startTime, hintsUsed]);
@@ -2540,6 +2518,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
     } else {
       incSoloAbandons();
       addSoloHints(hintsUsed);
+      pushStatsToProfile(authUserId).catch(() => {});
     }
   }
 
@@ -2573,6 +2552,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
             onJoinRematch={onJoinRematch}
             streak={versusStreak}
             onRoundResult={onVersusRoundResult}
+            authUserId={authUserId}
             themeColors={C} glass={glass} glassDark={glassDark} />
         </GameShell>
       );
@@ -3348,7 +3328,7 @@ function VersusEndScreen({
   optimalSteps, optimalPath,
   startWork, endWork,
   onExit, onStartRematch, onJoinRematch,
-  streak, onRoundResult,
+  streak, onRoundResult, authUserId,
   themeColors, glass, glassDark
 }) {
   const C = themeColors;
@@ -3382,6 +3362,7 @@ function VersusEndScreen({
     else if (iLost) incrementVersusLosses();
     if (!myAbandoned && optimalSteps !== null && mySteps <= optimalSteps) incVersusOptimal();
     addVersusHints(myHintsUsed);
+    pushStatsToProfile(authUserId).catch(() => {});
     // Marque le salon "finished" (sinon la revanche ne peut jamais réclamer le reset)
     finishMatch(matchId).catch(() => {});
     onRoundResult?.(iWon ? "me" : iLost ? "opponent" : null);
@@ -4140,7 +4121,7 @@ function VersusFiltersPanel({ versusPrefs, setVersusPrefs, disabled, themeColors
   );
 }
 
-function VersusJoinScreen({ initialCode, onBack, onJoined, themeColors, glass, glassDark }) {
+function VersusJoinScreen({ initialCode, onBack, onJoined, authUserId, themeColors, glass, glassDark }) {
   const C = themeColors;
   const [playerName, setPlayerName] = useState(getStoredPlayerName());
   const [code, setCode] = useState(initialCode || "");
@@ -4169,7 +4150,7 @@ function VersusJoinScreen({ initialCode, onBack, onJoined, themeColors, glass, g
       savePlayerName(name);
       if (!already) {
         const slot = players.length === 0 ? 1 : 2;
-        await joinMatch(match.id, name, slot);
+        await joinMatch(match.id, name, slot, authUserId ?? null);
       }
       onJoined(clean);
     } catch (e) {
@@ -4988,33 +4969,181 @@ function PlayerRow({ slot, name, isMe, themeColors }) {
   );
 }
 
-function AccountScreen({ onBack, themeColors, glass, glassDark, gamesPlayed }) {
+function AuthScreen({ onBack, onSuccess, themeColors, glass, glassDark }) {
+  const C = themeColors;
+  const [mode, setMode] = useState("login"); // "login" | "register"
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [done, setDone] = useState(false); // confirmation d'inscription
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+    if (mode === "register") {
+      const { error: err } = await supabase.auth.signUp({ email: email.trim(), password });
+      if (err) { setError(err.message); setLoading(false); return; }
+      setDone(true);
+    } else {
+      const { error: err } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+      if (err) { setError(err.message); setLoading(false); return; }
+      onSuccess();
+    }
+    setLoading(false);
+  }
+
+  const inputStyle = {
+    width: "100%", boxSizing: "border-box",
+    background: "transparent", border: `1px solid ${C.hairline}`,
+    borderRadius: 12, padding: "13px 16px", fontFamily: "inherit",
+    fontSize: 15, color: C.ink, outline: "none",
+  };
+  const btnStyle = {
+    ...glassDark, width: "100%", borderRadius: 13, padding: "14px 0", border: "none",
+    fontFamily: "inherit", fontSize: 12, letterSpacing: 1.5, textTransform: "uppercase",
+    fontWeight: 800, cursor: loading ? "default" : "pointer", color: C.glassDarkInk,
+    opacity: loading ? 0.6 : 1,
+  };
+
+  if (done) {
+    return (
+      <div style={{ minHeight: "100vh", padding: "70px 20px 40px", maxWidth: 420, margin: "0 auto" }}>
+        <header style={{ marginBottom: 32 }}>
+          <button onClick={onBack} style={{ ...glass, borderRadius: 999, padding: "9px 14px", cursor: "pointer",
+            fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: C.ink, fontWeight: 600, border: "none" }}>← Menu</button>
+        </header>
+        <div style={{ ...glass, borderRadius: 22, padding: 28, textAlign: "center" }}>
+          <div style={{ fontSize: 32, marginBottom: 16 }}>✉️</div>
+          <div style={{ fontSize: 17, fontWeight: 800, color: C.ink, marginBottom: 10 }}>Vérifie ta boîte mail</div>
+          <div style={{ fontSize: 13, color: C.inkSoft, lineHeight: 1.6 }}>
+            Un lien de confirmation a été envoyé à <strong>{email}</strong>.<br/>
+            Clique dessus pour activer ton compte.
+          </div>
+          <button onClick={() => { setDone(false); setMode("login"); }}
+            style={{ ...btnStyle, marginTop: 24, width: "auto", padding: "11px 24px" }}>
+            Retour à la connexion
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", padding: "70px 20px 40px", maxWidth: 420, margin: "0 auto" }}>
+      <header style={{ marginBottom: 32 }}>
+        <button onClick={onBack} style={{ ...glass, borderRadius: 999, padding: "9px 14px", cursor: "pointer",
+          fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: C.ink, fontWeight: 600, border: "none" }}>← Menu</button>
+      </header>
+
+      <div style={{ ...glass, borderRadius: 22, padding: 24 }}>
+        {/* Toggle login / register */}
+        <div style={{ display: "flex", gap: 4, background: C.bg, borderRadius: 12, padding: 4, marginBottom: 24 }}>
+          {["login", "register"].map(m => (
+            <button key={m} onClick={() => { setMode(m); setError(null); }}
+              style={{ flex: 1, borderRadius: 9, padding: "9px 0", border: "none", fontFamily: "inherit",
+                fontSize: 11, letterSpacing: 1.5, textTransform: "uppercase", fontWeight: 700, cursor: "pointer",
+                background: mode === m ? C.ink : "transparent", color: mode === m ? C.bg : C.inkSoft,
+                transition: "background .15s, color .15s" }}>
+              {m === "login" ? "Connexion" : "Inscription"}
+            </button>
+          ))}
+        </div>
+
+        <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <input type="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)}
+            required autoComplete="email" style={inputStyle} />
+          <input type="password" placeholder="Mot de passe" value={password} onChange={e => setPassword(e.target.value)}
+            required minLength={6} autoComplete={mode === "login" ? "current-password" : "new-password"} style={inputStyle} />
+          {error && (
+            <div style={{ fontSize: 12, color: RED, background: `${RED}18`, borderRadius: 8, padding: "9px 13px" }}>
+              {error}
+            </div>
+          )}
+          <button type="submit" disabled={loading} style={{ ...btnStyle, marginTop: 4 }}>
+            {loading ? "…" : mode === "login" ? "Se connecter" : "Créer mon compte"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+const LS_MIGRATED = "fil-migrated";
+
+function AccountScreen({ onBack, onOpenAuth, onLogout, themeColors, glass, glassDark, gamesPlayed, authUser, profile }) {
   const C = themeColors;
   const [playerName, setPlayerName] = useState(getStoredPlayerName);
   const [editing, setEditing] = useState(false);
   const [nameInput, setNameInput] = useState("");
   const inputRef = useRef(null);
+  const [showMigrate, setShowMigrate] = useState(false);
+  const [migrating, setMigrating] = useState(false);
 
-  const bestSteps      = loadBestSteps();
-  const soloEasy       = loadSoloDiff("easy");
-  const soloMedium     = loadSoloDiff("medium");
-  const soloHard       = loadSoloDiff("hard");
-  const soloOptimal    = loadSoloOptimal();
-  const soloAbandons   = loadSoloAbandons();
-  const soloHints      = loadSoloHints();
-  const versusWins     = loadVersusWins();
-  const versusLosses   = loadVersusLosses();
-  const versusOptimal  = loadVersusOptimal();
-  const versusHints    = loadVersusHints();
+  // Propose migration si connecté + données locales + pas encore migré
+  useEffect(() => {
+    if (!authUser || !profile) return;
+    const alreadyDone = localStorage.getItem(LS_MIGRATED) === "1";
+    if (alreadyDone) return;
+    const hasLocalData = loadGamesPlayed() > 0 || loadVersusWins() > 0 || loadVersusLosses() > 0;
+    if (hasLocalData) setShowMigrate(true);
+  }, [authUser, profile]);
+
+  async function handleMigrate() {
+    setMigrating(true);
+    await supabase.from("profiles").update({
+      solo_games:      loadGamesPlayed(),
+      solo_easy:       loadSoloDiff("easy"),
+      solo_medium:     loadSoloDiff("medium"),
+      solo_hard:       loadSoloDiff("hard"),
+      solo_optimal:    loadSoloOptimal(),
+      solo_abandons:   loadSoloAbandons(),
+      solo_hints:      loadSoloHints(),
+      best_score:      loadBestSteps(),
+      versus_wins:     loadVersusWins(),
+      versus_losses:   loadVersusLosses(),
+      versus_optimal:  loadVersusOptimal(),
+      versus_hints:    loadVersusHints(),
+      username:        getStoredPlayerName() || profile?.username || null,
+    }).eq("id", authUser.id);
+    localStorage.setItem(LS_MIGRATED, "1");
+    setShowMigrate(false);
+    setMigrating(false);
+    // Recharger le profil
+    const { data } = await supabase.from("profiles").select("*").eq("id", authUser.id).single();
+    if (data) profile = data; // force un re-render via la prop depuis App
+  }
+
+  // Stats : DB si connecté, localStorage sinon
+  const isLoggedIn = !!authUser && !!profile;
+  const bestSteps     = isLoggedIn ? (profile.best_score || 0)      : loadBestSteps();
+  const soloEasy      = isLoggedIn ? (profile.solo_easy || 0)       : loadSoloDiff("easy");
+  const soloMedium    = isLoggedIn ? (profile.solo_medium || 0)     : loadSoloDiff("medium");
+  const soloHard      = isLoggedIn ? (profile.solo_hard || 0)       : loadSoloDiff("hard");
+  const soloOptimal   = isLoggedIn ? (profile.solo_optimal || 0)    : loadSoloOptimal();
+  const soloAbandons  = isLoggedIn ? (profile.solo_abandons || 0)   : loadSoloAbandons();
+  const soloHints     = isLoggedIn ? (profile.solo_hints || 0)      : loadSoloHints();
+  const versusWins    = isLoggedIn ? (profile.versus_wins || 0)     : loadVersusWins();
+  const versusLosses  = isLoggedIn ? (profile.versus_losses || 0)   : loadVersusLosses();
+  const versusOptimal = isLoggedIn ? (profile.versus_optimal || 0)  : loadVersusOptimal();
+  const versusHints   = isLoggedIn ? (profile.versus_hints || 0)    : loadVersusHints();
+  const displayName   = isLoggedIn ? (profile.username || authUser.email) : playerName;
 
   function startEdit() {
-    setNameInput(playerName);
+    setNameInput(isLoggedIn ? (profile.username || "") : playerName);
     setEditing(true);
     setTimeout(() => inputRef.current?.focus(), 50);
   }
-  function confirmEdit() {
+  async function confirmEdit() {
     const n = nameInput.trim();
-    if (n) { savePlayerName(n); setPlayerName(n); }
+    if (n) {
+      savePlayerName(n);
+      setPlayerName(n);
+      if (isLoggedIn) {
+        await supabase.from("profiles").update({ username: n }).eq("id", authUser.id);
+      }
+    }
     setEditing(false);
   }
   function handleKeyDown(e) {
@@ -5033,6 +5162,61 @@ function AccountScreen({ onBack, themeColors, glass, glassDark, gamesPlayed }) {
         <button onClick={onBack} style={{ ...glass, borderRadius: 999, padding: "9px 14px", cursor: "pointer",
           fontFamily: "inherit", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: C.ink, fontWeight: 600, border: "none" }}>← Menu</button>
       </header>
+
+      {/* Popup migration localStorage → compte */}
+      {showMigrate && (
+        <div style={{ ...glass, borderRadius: 22, padding: 20, marginBottom: 16, border: `1px solid ${C.amber}40` }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.ink, marginBottom: 8 }}>Importer tes stats locales ?</div>
+          <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 14, lineHeight: 1.5 }}>
+            Des stats sont enregistrées sur cet appareil. Tu veux les importer vers ton compte ?
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={handleMigrate} disabled={migrating}
+              style={{ ...glassDark, flex: 1, borderRadius: 10, padding: "10px 0", border: "none",
+                fontFamily: "inherit", fontSize: 11, letterSpacing: 1, textTransform: "uppercase",
+                fontWeight: 700, cursor: "pointer", color: C.glassDarkInk }}>
+              {migrating ? "…" : "Importer"}
+            </button>
+            <button onClick={() => { localStorage.setItem(LS_MIGRATED, "1"); setShowMigrate(false); }}
+              style={{ flex: 1, borderRadius: 10, padding: "10px 0", border: `1px solid ${C.hairline}`,
+                fontFamily: "inherit", fontSize: 11, letterSpacing: 1, textTransform: "uppercase",
+                fontWeight: 700, cursor: "pointer", background: "transparent", color: C.inkSoft }}>
+              Non merci
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Compte connecté / déconnecté */}
+      <div style={{ ...glass, borderRadius: 22, padding: 20, marginBottom: 16 }}>
+        {isLoggedIn ? (
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, marginBottom: 6, fontWeight: 600 }}>Compte</div>
+              <div style={{ fontSize: 13, color: C.inkSoft }}>{authUser.email}</div>
+            </div>
+            <button onClick={onLogout}
+              style={{ background: "transparent", border: `1px solid ${C.hairline}`, borderRadius: 999,
+                padding: "7px 14px", fontFamily: "inherit", fontSize: 10, letterSpacing: 1.2,
+                textTransform: "uppercase", fontWeight: 700, color: C.inkSoft, cursor: "pointer" }}>
+              Déconnexion
+            </button>
+          </div>
+        ) : (
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, marginBottom: 6, fontWeight: 600 }}>Compte</div>
+              <div style={{ fontSize: 13, color: C.inkMute }}>Non connecté</div>
+            </div>
+            <button onClick={onOpenAuth}
+              style={{ ...glassDark, borderRadius: 999, padding: "9px 16px", border: "none",
+                fontFamily: "inherit", fontSize: 10, letterSpacing: 1.2,
+                textTransform: "uppercase", fontWeight: 700, cursor: "pointer", color: C.glassDarkInk }}>
+              Se connecter
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* Pseudo */}
       <div style={{ ...glass, borderRadius: 22, padding: 20, marginBottom: 16 }}>
@@ -5054,7 +5238,7 @@ function AccountScreen({ onBack, themeColors, glass, glassDark, gamesPlayed }) {
         ) : (
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div style={{ fontSize: 20, fontWeight: 800, color: C.ink, letterSpacing: -0.5 }}>
-              {playerName || <span style={{ color: C.inkMute, fontWeight: 500, fontSize: 14 }}>Pas encore défini</span>}
+              {displayName || <span style={{ color: C.inkMute, fontWeight: 500, fontSize: 14 }}>Pas encore défini</span>}
             </div>
             <button onClick={startEdit}
               style={{ background: "transparent", border: `1px solid ${C.hairline}`, borderRadius: 999,
@@ -5071,7 +5255,7 @@ function AccountScreen({ onBack, themeColors, glass, glassDark, gamesPlayed }) {
         <div style={sectionLabel}>Solo</div>
         <div style={{ ...statRow, borderTop: `1px solid ${C.hairline}` }}>
           <span style={statLabel}>Parties jouées</span>
-          <span style={statValue}>{gamesPlayed}</span>
+          <span style={statValue}>{isLoggedIn ? (profile.solo_games || 0) : gamesPlayed}</span>
         </div>
         <div style={{ ...statRow, paddingLeft: 12 }}>
           <span style={{ ...statLabel, fontSize: 12, color: C.inkMute }}>Facile</span>
@@ -5125,7 +5309,7 @@ function AccountScreen({ onBack, themeColors, glass, glassDark, gamesPlayed }) {
       </div>
 
       <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 2, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>
-        Stats enregistrées sur cet appareil · Comptes bientôt disponibles
+        {isLoggedIn ? "Stats synchronisées sur ton compte" : "Stats enregistrées sur cet appareil · Connecte-toi pour les sauvegarder"}
       </div>
     </div>
   );
