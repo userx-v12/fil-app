@@ -1318,7 +1318,7 @@ async function updateSoloScore(userId, delta) {
 async function pushStatsToProfile(userId) {
   if (!userId) return;
   await supabase.from("profiles").update({
-    solo_games:     loadGamesPlayed(),
+    solo_games:     loadSoloDiff("easy") + loadSoloDiff("medium") + loadSoloDiff("hard") + loadSoloAbandons(),
     solo_easy:      loadSoloDiff("easy"),
     solo_medium:    loadSoloDiff("medium"),
     solo_hard:      loadSoloDiff("hard"),
@@ -1374,20 +1374,13 @@ export default function App() {
   }
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      const u = session?.user ?? null;
-      setAuthUser(u);
-      if (u) syncProfile(u).then(p => {
-        setProfile(p);
-        if (p?.filter_preset) setPrefs({ ...DEFAULT_PREFS, ...p.filter_preset });
-      });
-    });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       const u = session?.user ?? null;
       setAuthUser(u);
       if (u) syncProfile(u).then(p => {
         setProfile(p);
         if (p?.filter_preset) setPrefs({ ...DEFAULT_PREFS, ...p.filter_preset });
+        if (_event === "SIGNED_IN") setScreen("account");
       });
       else setProfile(null);
     });
@@ -1929,7 +1922,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.27</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.28</div>
     </div>
   );
 }
@@ -3431,15 +3424,31 @@ function VersusEndScreen({
   useEffect(() => {
     if (!bothDone || statsTrackedRef.current) return;
     statsTrackedRef.current = true;
-    const iWon = !myAbandoned && (
-      opponentAbandoned ||
-      mySteps < (opponentFinalSteps ?? Infinity) ||
-      (mySteps === (opponentFinalSteps ?? Infinity) && myTimeMs < (opponentFinalTimeMs ?? Infinity))
-    );
-    const iLost = myAbandoned || (!myAbandoned && !opponentAbandoned && (
-      mySteps > (opponentFinalSteps ?? 0) ||
-      (mySteps === (opponentFinalSteps ?? 0) && myTimeMs > (opponentFinalTimeMs ?? 0))
-    ));
+    let iWon = false;
+    let iLost = false;
+    if (myAbandoned) {
+      iLost = true;
+    } else if (opponentAbandoned) {
+      iWon = true;
+    } else if (victoryCondition === "time") {
+      const oppSteps = opponentFinalSteps ?? Infinity;
+      const oppTime  = opponentFinalTimeMs ?? Infinity;
+      if      (myHintsUsed < opponentHintsUsed) iWon  = true;
+      else if (myHintsUsed > opponentHintsUsed) iLost = true;
+      else if (myTimeMs    < oppTime)            iWon  = true;
+      else if (myTimeMs    > oppTime)            iLost = true;
+      else if (mySteps     < oppSteps)           iWon  = true;
+      else if (mySteps     > oppSteps)           iLost = true;
+    } else {
+      const oppSteps = opponentFinalSteps ?? Infinity;
+      const oppTime  = opponentFinalTimeMs ?? Infinity;
+      if      (mySteps     < oppSteps)           iWon  = true;
+      else if (mySteps     > oppSteps)           iLost = true;
+      else if (myHintsUsed < opponentHintsUsed)  iWon  = true;
+      else if (myHintsUsed > opponentHintsUsed)  iLost = true;
+      else if (myTimeMs    < oppTime)             iWon  = true;
+      else if (myTimeMs    > oppTime)             iLost = true;
+    }
     if (iWon) incrementVersusWins();
     else if (iLost) incrementVersusLosses();
     if (!myAbandoned && optimalSteps !== null && mySteps <= optimalSteps) incVersusOptimal();
@@ -5092,15 +5101,19 @@ function AuthScreen({ onBack, onSuccess, themeColors, glass, glassDark }) {
     setError(null);
     setLoading(true);
     if (mode === "register") {
-      const { error: err } = await supabase.auth.signUp({ email: email.trim(), password });
+      const { data, error: err } = await supabase.auth.signUp({ email: email.trim(), password });
       if (err) { setError(err.message); setLoading(false); return; }
-      setDone(true);
+      if (data?.session) {
+        // Confirmation email désactivée : déjà connecté, navigation via SIGNED_IN
+      } else {
+        setDone(true);
+        setLoading(false);
+      }
     } else {
       const { error: err } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
       if (err) { setError(err.message); setLoading(false); return; }
-      onSuccess();
+      // Navigation via SIGNED_IN dans onAuthStateChange ; loading reste à true jusqu'au démontage
     }
-    setLoading(false);
   }
 
   const inputStyle = {
@@ -5202,7 +5215,7 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
   async function handleMigrate() {
     setMigrating(true);
     await supabase.from("profiles").update({
-      solo_games:      loadGamesPlayed(),
+      solo_games:      loadSoloDiff("easy") + loadSoloDiff("medium") + loadSoloDiff("hard") + loadSoloAbandons(),
       solo_easy:       loadSoloDiff("easy"),
       solo_medium:     loadSoloDiff("medium"),
       solo_hard:       loadSoloDiff("hard"),
@@ -5280,7 +5293,8 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
         <div style={{ ...glass, borderRadius: 22, padding: 20, marginBottom: 16, border: `1px solid ${C.amber}40` }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: C.ink, marginBottom: 8 }}>Importer tes stats locales ?</div>
           <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 14, lineHeight: 1.5 }}>
-            Des stats sont enregistrées sur cet appareil. Tu veux les importer vers ton compte ?
+            Des stats sont enregistrées sur cet appareil. Tu veux les importer vers ton compte ?<br/>
+            <span style={{ opacity: 0.7 }}>Les rangs Elo repartent de zéro (non calculables rétroactivement).</span>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <button onClick={handleMigrate} disabled={migrating}
@@ -5383,8 +5397,8 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
           </div>
         )}
         <div style={{ ...statRow, borderTop: `1px solid ${C.hairline}` }}>
-          <span style={statLabel}>Parties jouées</span>
-          <span style={statValue}>{isLoggedIn ? (profile.solo_games || 0) : gamesPlayed}</span>
+          <span style={statLabel}>Parties solo</span>
+          <span style={statValue}>{isLoggedIn ? (profile.solo_games || 0) : loadSoloDiff("easy") + loadSoloDiff("medium") + loadSoloDiff("hard") + loadSoloAbandons()}</span>
         </div>
         <div style={{ ...statRow, paddingLeft: 12 }}>
           <span style={{ ...statLabel, fontSize: 12, color: C.inkMute }}>Facile</span>
