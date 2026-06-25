@@ -1922,7 +1922,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.28</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.29</div>
     </div>
   );
 }
@@ -5436,17 +5436,24 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
         {versusRank && (
           <div style={{ marginBottom: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
-              <span style={{ fontSize: 18, fontWeight: 800, color: C.ink, letterSpacing: -0.5 }}>{versusRank.name}</span>
+              {(versusWins + versusLosses) === 0
+                ? <span style={{ fontSize: 18, fontWeight: 800, color: C.inkSoft, letterSpacing: -0.5 }}>Non classé</span>
+                : <span style={{ fontSize: 18, fontWeight: 800, color: C.ink, letterSpacing: -0.5 }}>{versusRank.name}</span>
+              }
               <span style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>{profile.versus_elo ?? 1000} Elo</span>
             </div>
-            <div style={{ height: 5, borderRadius: 99, background: C.hairline, overflow: "hidden" }}>
-              <div style={{ height: "100%", borderRadius: 99, background: C.versusMe,
-                width: `${Math.round(versusRank.progress * 100)}%`, transition: "width .4s" }} />
-            </div>
-            {versusRank.nextMin && (
-              <div style={{ fontSize: 10, color: C.inkMute, marginTop: 4, textAlign: "right" }}>
-                {versusRank.nextMin - (profile.versus_elo ?? 1000)} Elo pour {VERSUS_RANKS.find(r => r.min === versusRank.nextMin)?.name}
-              </div>
+            {(versusWins + versusLosses) > 0 && (
+              <>
+                <div style={{ height: 5, borderRadius: 99, background: C.hairline, overflow: "hidden" }}>
+                  <div style={{ height: "100%", borderRadius: 99, background: C.versusMe,
+                    width: `${Math.round(versusRank.progress * 100)}%`, transition: "width .4s" }} />
+                </div>
+                {versusRank.nextMin && (
+                  <div style={{ fontSize: 10, color: C.inkMute, marginTop: 4, textAlign: "right" }}>
+                    {versusRank.nextMin - (profile.versus_elo ?? 1000)} Elo pour {VERSUS_RANKS.find(r => r.min === versusRank.nextMin)?.name}
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
