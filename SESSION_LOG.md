@@ -28,6 +28,80 @@ Lis CLAUDE.md et SESSION_LOG.md. Dis-moi en 3 lignes où on en est et ce qu'on a
 
 ---
 
+## Session du 2026-06-16 — v5.20 → v5.24
+
+### Ce qu'on a fait
+
+**Refonte complète du mode Versus** (gros chantier en un seul passage, demandé explicitement "tout d'un coup" par Mathieu) :
+
+1. **Salons persistants (v5.20)** — la revanche ne crée plus un nouveau match/code : reset en place du même salon (`matches.id` inchangé). Helpers ajoutés : `getPlaceholderWork()` (l.614), `saveCustomPick()` (l.647), `resetMatchPlayersForNewRound()` (l.679). `startMatch` étendu à `(matchId, victoryCondition, customStart, customEnd)` (l.597).
+
+2. **Refonte UI Versus (v5.21)** :
+   - `VersusCreateScreen` et `VersusJoinManualScreen` supprimés. "Créer une partie" crée le salon instantanément (`handleCreateVersusRoom`, l.1584) et affiche le code direct ; pseudo éditable en haut, réglages réordonnés (Condition de victoire / Type de partie / Mode / Difficulté / Options du défi).
+   - `VersusJoinScreen` (l.4143) fusionné : pseudo + code en un seul écran.
+   - Mode Standard : suppression du système propose/accepte/refuse. N'importe quel joueur peut rafraîchir départ/arrivée/les deux à tout moment (`applyNewDefi`, l.747), ce qui remet les 2 "OK pour moi" à zéro (`setReadySlot`, l.762, fusionne dans `pending_change` au lieu d'écraser).
+   - Auto-démarrage (countdown) dès que les 2 joueurs sont "OK" — plus de bouton "Démarrer" créateur, ni en Standard ni en Sur-mesure.
+   - Sur-mesure (renommé depuis "Personnalisé") : rôles départ/arrivée tirés au hasard à chaque manche, choix simultané des 2 joueurs.
+   - Revanche "écran vierge" : `resetMatchDefi()` (l.622) remet `start_id = end_id` (placeholder) + `pending_change = null`, le lobby affiche un bouton "Tirer un défi" plutôt que de relancer un défi automatiquement.
+   - Mode Temps : arrêt forcé de l'adversaire dès qu'un joueur finit (logique affinée v5.23, voir plus bas).
+   - Série de victoires consécutives en mémoire (pas de DB), affichée sur l'écran de fin à partir de 2.
+
+3. **Design Sur-mesure (v5.24)** : les labels révélaient le rôle tiré au hasard ("Tu choisis le départ/l'arrivée") → remplacés par "Ton film" / "Film de {adversaire}" (l.4741, l.4791) pour garder le suspense. Faux titre flouté ("Titre mystère" / "20XX") ajouté à côté de l'affiche floutée de l'adversaire pour renforcer l'illusion de dissimulation.
+
+### Bugs corrigés
+
+1. **Affiche de son propre choix invisible en Sur-mesure** (v5.22)
+   - Cause : `pending_change.startPick`/`endPick` ne stocke que `{id, type}` (pas de titre/affiche), donc le `<Poster>` du joueur affichait une carte vide.
+   - Fix : ajout d'un fetch dédié `myPickWork` (effect autour de l.4370, miroir de `opponentPickWork`) qui va chercher le titre/affiche complets via `getWorksByPairs`.
+
+2. **Pas de confirmation "OK pour moi" en Sur-mesure** (v5.22)
+   - Cause : l'auto-démarrage se lançait dès que les 2 joueurs avaient choisi leur film, sans étape de validation (contrairement au mode Standard).
+   - Fix : ajout du même mécanisme `readySlots` qu'en Standard, gating l'auto-start sur `bothPicked && bothOk` (effect "Auto-start" dans `VersusLobbyScreen`).
+
+3. **Revanche qui relance le même défi en ~1s avec "gagné" pour les deux** (v5.22) — **bug le plus sérieux de la session**
+   - Cause racine : `matches.status` n'était **jamais** mis à `"finished"` nulle part dans le code. La revanche réclame le reset via `.eq("status", "finished")` → ce claim échouait silencieusement à 100% du temps → `match_players` jamais réinitialisé, `matches.status` restait `"playing"` → le lobby retombait sur l'ancien statut et relançait directement l'ancienne partie avec des données `match_players` périmées (chaque joueur voyait l'adversaire "déjà fini" avec son ancien temps, d'où le double "gagné").
+   - Fix : nouvelle fonction `finishMatch(matchId)` (l.694, `UPDATE matches SET status='finished' WHERE status='playing'`), appelée dans l'effet de fin de manche de `VersusEndScreen` dès que `bothDone`.
+
+4. **`setReadySlot` écrasait `pending_change`** (v5.22)
+   - Cause : l'update remplaçait tout l'objet JSONB par `{readySlots: [...]}`, effaçant `phase`/`startSlot`/`endSlot`/`startPick`/`endPick` du mode Sur-mesure dès qu'on cliquait "OK pour moi".
+   - Fix : merge (`{ ...base, readySlots: next }`) au lieu d'écraser (l.762-770).
+
+5. **Bouton Revanche qui disparaît pour l'un des deux joueurs** (v5.23)
+   - Cause : `resetMatchPlayersForNewRound` (appelé par la revanche) remet `finished=false` sur les 2 lignes `match_players` — le joueur encore sur son écran de fin (qui n'a pas cliqué "Revanche") reçoit cet update en Realtime, son `opponentFinished` repasse à `false`, donc `bothDone` aussi → les 3 variantes du bouton Revanche (toutes gatées sur `bothDone`) disparaissent, ne laissant que "Menu".
+   - Fix : `bothDoneAchievedRef` (l.2247) dans `Game` — une fois que `finished && opponentFinished` ont été vrais une fois, on gèle la prise en compte des updates `match_players` suivants (l.2304 `if (bothDoneAchievedRef.current) return;`). Les updates légitimes (suivi live de l'adversaire pendant qu'il joue encore) continuent de passer puisque le gel n'intervient qu'après la conclusion réelle des 2 manches.
+
+6. **Priorité indices/temps incorrecte en mode Temps** (v5.23)
+   - Cause : le verdict comparait le temps avant les indices ("temps d'abord, puis indices"), alors que la règle voulue est l'inverse — un indice est une pénalité qui doit passer avant le temps.
+   - Fix : inversion de l'ordre dans le calcul du verdict (l.3498) et dans les 2 calculs `winner` des `VersusPlayerCard` (recherche `victoryCondition === "time"` dans le fichier). L'arrêt forcé du 2e joueur (l.2359-2369) ne se déclenche plus immédiatement dès que le 1er finit : seulement si le 1er a fini avec 0 indice ; sinon le 2e continue jusqu'à atteindre/dépasser le nombre d'indices du 1er (`if (hintsUsed < opponentHintsUsed) return;`).
+
+### État actuel du code
+
+- **Version affichée : v5.24**
+- Commits (tous pushés sur `main`) : `40a7e8a` (v5.20), `d448268` (version bump), `9e2257f` (v5.21 refonte), `ce52e5c` (v5.22 fixes), `92df818` (v5.23 fixes), `900ebbb` (v5.24 design)
+- Fichier modifié : `src/App.jsx` uniquement, aucune migration DB (tout repose sur les colonnes JSONB existantes, réutilisées avec des clés différentes selon le contexte : `pending_change.readySlots` en Standard, `pending_change.{phase, startSlot, endSlot, startPick, endPick, readySlots}` en Sur-mesure)
+- Mathieu a testé en local et confirmé : **tout fonctionne nickel** (Standard + Sur-mesure : création, lobby, double consentement, picking sur-mesure, revanche, mode Temps, design flouté).
+- Pas de tests automatisés — validation faite manuellement par Mathieu (2 onglets navigateur).
+
+### Ce qui reste à faire (backlog v5.25+)
+
+1. Supabase Auth — comptes réels, stats cross-device (priorité haute, projet 1-2 jours)
+2. `character_name` dans `credits` — nom du personnage joué dans le casting
+3. `original_title` dans `works` — recherche cross-langue
+4. Phase 6 : App iOS via Capacitor
+5. (Mineur, non demandé) Les filtres avancés (Mode Films/Mix/Séries, Difficulté, eras/rating/langues/genres) restent en state local `versusPrefs` côté créateur uniquement — si l'invité clique "Nouveau défi" en Standard, il utilise ses propres filtres par défaut (pas ceux du créateur), puisque rien n'est synchronisé en DB pour ces réglages-là. Comportement préexistant, pas corrigé dans cette session (uniquement `victory_condition` et `custom_mode` ont été rendus live en DB).
+
+### Pièges à éviter
+
+- **NE JAMAIS retirer `finishMatch(matchId)` de l'effet `bothDone` dans `VersusEndScreen`.** Sans ça, `matches.status` ne repasse jamais à `"finished"` et toute la mécanique de revanche (atomic claim `.eq("status","finished")`) échoue silencieusement à 100% du temps. C'était LE bug racine de la v5.21 → v5.22.
+- **NE JAMAIS faire `pending_change: {...nouvelObjet}` sans merge.** Le JSONB `pending_change` est multi-usage (proposition standard obsolète maintenant supprimée, `readySlots` standard, `{phase, startSlot, endSlot, startPick, endPick, readySlots}` en sur-mesure). Toujours `{ ...base, ...champsModifiés }`. Exception volontaire : `applyNewDefi` et le tirage des rôles font un remplacement complet intentionnel (reset volontaire d'une nouvelle phase).
+- **NE JAMAIS retirer le `bothDoneAchievedRef` gate dans `Game`** (l.2304) sur la subscription `match_players`. Sans lui, le reset de la revanche fait revivre `opponentFinished=false` chez le joueur qui regarde encore son écran de fin, et le bouton Revanche disparaît pour lui.
+- **NE JAMAIS revenir à "temps d'abord, puis indices" dans le mode Temps.** La règle voulue par Mathieu est indices d'abord (pénalité), puis temps, puis étapes — décision explicite prise dans cette session, pas une erreur à corriger.
+- **NE JAMAIS réafficher "départ"/"arrivée" dans l'UI Sur-mesure pendant la phase de choix.** C'est une décision de design délibérée pour garder le suspense (le rôle est tiré au hasard et ne doit pas être révélé avant le lancement). Toujours utiliser un libellé neutre ("Ton film" / "Film de X").
+- **Le mode Standard démarre toujours "vierge"** (pas de défi auto-tiré, ni à la création ni à la revanche) — c'est un choix délibéré pour unifier les deux flux sous le même mécanisme (`start_id === end_id` comme sentinel "pas de défi"). Si Mathieu veut un jour revenir à l'auto-pick immédiat à la création (pas à la revanche), il faudra distinguer les deux cas — actuellement ils partagent le même chemin de code.
+- **`startMatch` a maintenant un guard atomique `.eq("status", "waiting")`** et retourne `null` (pas une erreur) si 0 lignes affectées — c'est volontaire (claim atomique anti-double-lancement). Ne pas remettre `.single()` qui throw sur 0 lignes.
+
+---
+
 ## Session du 2026-06-14 — v5.19 (fin de session)
 
 ### Ce qu'on a fait
