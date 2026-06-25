@@ -198,6 +198,7 @@ Policies `anon` et `auth` : SELECT + INSERT + UPDATE sur les 5 tables (pas de DE
 - Préserver le style du code existant
 - Si tu hésites entre deux approches, propose-moi le choix au lieu de deviner
 - Si tu n'as pas l'info, demande-moi avant d'inventer
+- **Mettre à jour le numéro de version dans le menu avant chaque commit** (chercher `v5.` dans App.jsx, incrémenter le patch)
 
 ### Économie de tokens
 - Pas de recap complet de chaque message si je ne le demande pas
@@ -303,7 +304,8 @@ Si tu n'es pas sûr de mon intention, demande-moi.
 5. Tu codes en mini-incréments, je vois chaque diff
 6. Je teste en local (`npm run dev` sur `localhost:5174`)
 7. Je dis "OK ça marche" ou "il y a un bug, voilà"
-8. On commit + push si tout va bien
+8. **Avant le commit : mettre à jour le numéro de version dans le menu** (recherche `v5.` dans App.jsx pour trouver la ligne exacte)
+9. On commit + push si tout va bien
 
 ---
 
