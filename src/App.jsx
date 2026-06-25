@@ -1319,22 +1319,41 @@ export default function App() {
   const [authUser, setAuthUser] = useState(null);   // Utilisateur Supabase connecté (ou null)
   const [profile, setProfile] = useState(null);     // Ligne profiles correspondante
 
+  async function refreshProfile() {
+    if (!authUser) return;
+    const data = await syncProfile(authUser);
+    setProfile(data);
+  }
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       const u = session?.user ?? null;
       setAuthUser(u);
-      if (u) syncProfile(u).then(setProfile);
+      if (u) syncProfile(u).then(p => {
+        setProfile(p);
+        if (p?.filter_preset) setPrefs({ ...DEFAULT_PREFS, ...p.filter_preset });
+      });
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       const u = session?.user ?? null;
       setAuthUser(u);
-      if (u) syncProfile(u).then(setProfile);
+      if (u) syncProfile(u).then(p => {
+        setProfile(p);
+        if (p?.filter_preset) setPrefs({ ...DEFAULT_PREFS, ...p.filter_preset });
+      });
       else setProfile(null);
     });
     return () => subscription.unsubscribe();
   }, []);
 
   useEffect(() => { savePrefs(prefs); }, [prefs]);
+  useEffect(() => {
+    if (!authUser) return;
+    const t = setTimeout(() => {
+      supabase.from("profiles").update({ filter_preset: prefs }).eq("id", authUser.id).catch(() => {});
+    }, 500);
+    return () => clearTimeout(t);
+  }, [prefs, authUser]);
   useEffect(() => { document.body.style.background = C.bg; saveTheme(theme); }, [theme, C.bg]);
 
   useEffect(() => {
@@ -1738,6 +1757,7 @@ export default function App() {
               versusStreak={versusStreak}
               onVersusRoundResult={handleVersusRoundResult}
               authUserId={authUser?.id ?? null}
+              onStatsSync={authUser ? refreshProfile : null}
               themeColors={C} glass={glass} glassDark={glassDark} theme={theme} />
       )}
       {screen === "custom" && <CustomScreen onBack={() => setScreen("menu")} onStart={startCustom}
@@ -1764,6 +1784,7 @@ export default function App() {
       {screen === "account" && <AccountScreen onBack={() => setScreen("menu")} onOpenAuth={() => setScreen("auth")}
                                   themeColors={C} glass={glass} glassDark={glassDark}
                                   gamesPlayed={gamesPlayed} authUser={authUser} profile={profile}
+                                  onProfileRefresh={refreshProfile}
                                   onLogout={async () => { await supabase.auth.signOut(); setScreen("menu"); }} />}
       {screen === "auth" && <AuthScreen onBack={() => setScreen("account")}
                                   onSuccess={() => setScreen("account")}
@@ -1859,7 +1880,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.25</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.26</div>
     </div>
   );
 }
@@ -2178,7 +2199,7 @@ function Star({ fill, size, color, emptyColor }) {
 // GAME
 // =========================================================================
 
-function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart, versusContext, onStartRematch, onJoinRematch, versusStreak, onVersusRoundResult, authUserId, themeColors, glass, glassDark, theme }) {
+function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart, versusContext, onStartRematch, onJoinRematch, versusStreak, onVersusRoundResult, authUserId, onStatsSync, themeColors, glass, glassDark, theme }) {
   const C = themeColors;
   const isVersus = !!versusContext;
   const [path, setPath] = useState([{ type: "movie", data: challenge.start }]);
@@ -2384,7 +2405,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
           ? Math.max(0, Math.floor((challenge.optimal.length - 1) / 2)) : null;
         if (optSteps !== null && finalSteps <= optSteps) incSoloOptimal();
         addSoloHints(hintsUsed);
-        pushStatsToProfile(authUserId).catch(() => {});
+        pushStatsToProfile(authUserId).then(() => onStatsSync?.()).catch(() => {});
       }
     }
   }, [isAtEnd, finished, onFinished, isVersus, versusContext, path.length, startTime, hintsUsed]);
@@ -2518,7 +2539,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
     } else {
       incSoloAbandons();
       addSoloHints(hintsUsed);
-      pushStatsToProfile(authUserId).catch(() => {});
+      pushStatsToProfile(authUserId).then(() => onStatsSync?.()).catch(() => {});
     }
   }
 
@@ -2553,6 +2574,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
             streak={versusStreak}
             onRoundResult={onVersusRoundResult}
             authUserId={authUserId}
+            onStatsSync={onStatsSync}
             themeColors={C} glass={glass} glassDark={glassDark} />
         </GameShell>
       );
@@ -3328,7 +3350,7 @@ function VersusEndScreen({
   optimalSteps, optimalPath,
   startWork, endWork,
   onExit, onStartRematch, onJoinRematch,
-  streak, onRoundResult, authUserId,
+  streak, onRoundResult, authUserId, onStatsSync,
   themeColors, glass, glassDark
 }) {
   const C = themeColors;
@@ -3362,7 +3384,7 @@ function VersusEndScreen({
     else if (iLost) incrementVersusLosses();
     if (!myAbandoned && optimalSteps !== null && mySteps <= optimalSteps) incVersusOptimal();
     addVersusHints(myHintsUsed);
-    pushStatsToProfile(authUserId).catch(() => {});
+    pushStatsToProfile(authUserId).then(() => onStatsSync?.()).catch(() => {});
     // Marque le salon "finished" (sinon la revanche ne peut jamais réclamer le reset)
     finishMatch(matchId).catch(() => {});
     onRoundResult?.(iWon ? "me" : iLost ? "opponent" : null);
@@ -5072,7 +5094,7 @@ function AuthScreen({ onBack, onSuccess, themeColors, glass, glassDark }) {
 
 const LS_MIGRATED = "fil-migrated";
 
-function AccountScreen({ onBack, onOpenAuth, onLogout, themeColors, glass, glassDark, gamesPlayed, authUser, profile }) {
+function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeColors, glass, glassDark, gamesPlayed, authUser, profile }) {
   const C = themeColors;
   const [playerName, setPlayerName] = useState(getStoredPlayerName);
   const [editing, setEditing] = useState(false);
@@ -5110,9 +5132,7 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, themeColors, glass, glass
     localStorage.setItem(LS_MIGRATED, "1");
     setShowMigrate(false);
     setMigrating(false);
-    // Recharger le profil
-    const { data } = await supabase.from("profiles").select("*").eq("id", authUser.id).single();
-    if (data) profile = data; // force un re-render via la prop depuis App
+    onProfileRefresh?.();
   }
 
   // Stats : DB si connecté, localStorage sinon
@@ -5138,10 +5158,12 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, themeColors, glass, glass
   async function confirmEdit() {
     const n = nameInput.trim();
     if (n) {
-      savePlayerName(n);
-      setPlayerName(n);
       if (isLoggedIn) {
         await supabase.from("profiles").update({ username: n }).eq("id", authUser.id);
+        onProfileRefresh?.();
+      } else {
+        savePlayerName(n);
+        setPlayerName(n);
       }
     }
     setEditing(false);
