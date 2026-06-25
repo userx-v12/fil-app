@@ -28,6 +28,55 @@ Lis CLAUDE.md et SESSION_LOG.md. Dis-moi en 3 lignes où on en est et ce qu'on a
 
 ---
 
+## Session du 2026-06-25 — v5.26 (suite)
+
+### Ce qu'on a fait
+
+**Sujet 1 — Stats qui ne se mettaient à jour qu'au reload (bug)**
+- Cause : `pushStatsToProfile` faisait un UPDATE en DB mais n'appelait jamais `setProfile()` → le state React restait périmé jusqu'au reload
+- Fix : ajout de `refreshProfile()` dans App (`syncProfile` + `setProfile`), passé comme prop `onStatsSync` à `Game` et `VersusEndScreen`, et comme `onProfileRefresh` à `AccountScreen`
+- Chaque `pushStatsToProfile` appelle maintenant `.then(() => onStatsSync?.())` → re-render immédiat d'AccountScreen avec les nouvelles stats
+- Dead code `if (data) profile = data` retiré de `handleMigrate` (réassignation de paramètre, aucun effet React) — remplacé par `onProfileRefresh?.()`
+
+**Sujet 2 — Séparation pseudo Versus / username compte**
+- Cause : `confirmEdit()` dans AccountScreen appelait à la fois `savePlayerName()` (localStorage → pseudo Versus) ET `supabase.update({ username })` (DB → compte)
+- Fix : si connecté → met à jour uniquement `profiles.username` + `onProfileRefresh?.()` ; si invité → met à jour uniquement le localStorage. Les deux sont maintenant totalement indépendants.
+
+**Sujet 3 — Filtres solo synchronisés avec le compte**
+- Au login (`getSession` et `onAuthStateChange`) : si `profile.filter_preset` est non null → `setPrefs({ ...DEFAULT_PREFS, ...filter_preset })` — la DB prime sur le localStorage
+- À chaque changement de `prefs` : useEffect avec debounce 500ms → `supabase.from("profiles").update({ filter_preset: prefs })` si `authUser` présent
+- Invités : aucun changement de comportement
+
+### Bugs corrigés
+
+1. **Stats ne se mettant à jour qu'au reload** — cause : `setProfile()` jamais appelé après `pushStatsToProfile`. Fix : `onStatsSync` callback.
+2. **Dead code `profile = data`** dans `handleMigrate` — réassignation de paramètre sans effet. Fix : `onProfileRefresh?.()`.
+
+### État actuel du code
+
+- **Version affichée : v5.26**
+- Commit pushé : `aeaded6`
+- Fichier modifié : `src/App.jsx` uniquement
+- Mathieu a testé et confirmé : tout fonctionne
+
+### Ce qui reste à faire (backlog v5.27+)
+
+1. **Système Elo + Rangs** — colonnes `versus_elo` et `solo_score` déjà en DB, plan validé (voir session v5.25), prêt à implémenter
+2. Redesign visuel (en cours sur Figma)
+3. `character_name` dans `credits` — migration DB
+4. `original_title` dans `works` — migration DB
+5. Phase 6 : App iOS via Capacitor
+
+### Pièges à éviter
+
+- **`onStatsSync` doit être passé de Game → VersusEndScreen** — si on retouche les props de l'un des deux, ne pas oublier l'autre
+- **`refreshProfile` dans App est défini DANS le composant App** (pas top-level) — elle capture `authUser` et `setProfile` par closure. Ne pas la déplacer en dehors du composant.
+- **Au login, la DB prime sur le localStorage pour les filtres** — c'est voulu. Si `filter_preset` est null en DB (nouveau compte), les filtres localStorage sont conservés.
+- **Le debounce 500ms du sync filtres** : si l'utilisateur change beaucoup de filtres rapidement, un seul UPDATE partira. Ne pas supprimer ce debounce (évite le spam DB).
+- **Pseudo Versus (`fil-player-name` localStorage) et `profiles.username` sont maintenant totalement indépendants.** Ne pas les re-lier dans `confirmEdit()`.
+
+---
+
 ## Session du 2026-06-25 — v5.25
 
 ### Ce qu'on a fait
