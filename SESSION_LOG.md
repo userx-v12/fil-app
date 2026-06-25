@@ -28,6 +28,69 @@ Lis CLAUDE.md et SESSION_LOG.md. Dis-moi en 3 lignes où on en est et ce qu'on a
 
 ---
 
+## Session du 2026-06-25 — v5.25
+
+### Ce qu'on a fait
+
+**Sujet 3 — Suppression du bouton d'installation PWA**
+- Supprimé : 3 states (`installPrompt`, `installType`, `showInstallPopup`), le useEffect de capture `beforeinstallprompt`/détection iOS, la fonction `handleInstallClick`, le `TopRoundButton position="center"`, et la popup entière (overlay + contenu)
+- `manifest.json`, `sw.js` et les icônes PNG conservés intacts — la PWA reste installable via le navigateur
+
+**Sujet 1 — Supabase Auth (comptes email/password)**
+
+Migration DB préalable exécutée par Mathieu dans Supabase :
+- Nouvelle table `profiles` (FK vers `auth.users`) avec colonnes stats solo/versus + `versus_elo` / `solo_score` (Elo, pour le sujet 2 à venir) + `filter_preset` JSONB
+- Colonne `user_id UUID REFERENCES auth.users(id)` ajoutée dans `match_players` (nullable)
+- RLS activé sur `profiles` : lecture publique, écriture sur son propre profil uniquement
+
+Code ajouté dans `src/App.jsx` :
+1. **`pushStatsToProfile(userId)`** (top-level, l.~1271) — lit depuis localStorage, pousse vers `profiles` via UPDATE
+2. **`syncProfile(user)`** (top-level) — upsert avec `ignoreDuplicates: true` pour créer la ligne si absente, puis SELECT
+3. **États `authUser` / `profile`** dans App + useEffect auth : `getSession()` au mount + listener `onAuthStateChange`
+4. **`AuthScreen`** (nouveau composant, juste avant `AccountScreen`) — email/password, toggle login/inscription, écran de confirmation d'email après inscription
+5. **`AccountScreen` refondu** — carte "Compte" (email + bouton Déconnexion si connecté, bouton "Se connecter" sinon) ; stats lues depuis `profiles` si connecté, localStorage sinon ; popup de migration localStorage → compte (déclenchée au premier login si données locales présentes, flag `fil-migrated` en LS pour ne pas reproposer) ; pseudo éditable synchronisé vers `profiles.username` si connecté ; texte de bas de page adapté
+6. **Sync stats DB** après chaque partie : `pushStatsToProfile` appelé dans l'useEffect `isAtEnd` de `Game` (solo fin), dans le handler abandon solo, et dans l'useEffect `statsTracked` de `VersusEndScreen`
+7. **`joinMatch`** étendu à `(matchId, playerName, slot, userId = null)` — remplit `match_players.user_id` si connecté ; appelé depuis `handleCreateVersusRoom` (App) et `VersusJoinScreen`
+8. Nouveau screen `"auth"` câblé dans App, `VersusJoinScreen` reçoit `authUserId` prop
+
+**CLAUDE.md mis à jour** : règle "mettre à jour le numéro de version dans le menu avant chaque commit" ajoutée dans "TOUJOURS faire" et dans le workflow étape 8.
+
+### Bugs corrigés
+
+Aucun bug — uniquement features + suppression.
+
+(Rattrapage : version affichée dans le menu était restée à `v5.24` après le premier commit `0782d82` → corrigée en `v5.25` dans le commit suivant `749000b`.)
+
+### État actuel du code
+
+- **Version affichée : v5.25**
+- Commits pushés sur `main` : `0782d82` (Auth + suppression PWA), `749000b` (fix version + CLAUDE.md)
+- Fichiers modifiés : `src/App.jsx`, `CLAUDE.md`
+- Mathieu a testé et confirmé : connexion, inscription, stats, tout fonctionne
+
+### Ce qui reste à faire (backlog v5.26+)
+
+1. **Système Elo + Rangs** (dépend de l'auth — prêt à implémenter) : colonnes `versus_elo` et `solo_score` déjà créées dans `profiles`. Plan validé :
+   - Versus Elo : classique K=32, départ 1000
+   - Solo Score : cumulatif par partie (abandon -3/-5/-5, fini +5/+10/+15, optimal +12/+22/+35 selon Facile/Moyen/Difficile), plancher 800
+   - Rangs : Figurant / Second Rôle / Premier Rôle / Vedette / Légende (seuils séparés Solo et Versus)
+   - Affichage : écran Compte + fin de partie Versus (+/- Elo) + badge lobby
+2. Redesign visuel (en cours séparément sur Figma)
+3. `character_name` dans `credits` — migration DB
+4. `original_title` dans `works` — migration DB
+5. Phase 6 : App iOS via Capacitor
+
+### Pièges à éviter
+
+- **`pushStatsToProfile` lit depuis localStorage** — elle est appelée juste après les `inc*` / `add*` localStorage, donc les valeurs sont déjà à jour au moment de l'appel. Ne pas inverser l'ordre.
+- **`syncProfile` utilise `ignoreDuplicates: true`** — c'est voulu : insert si absent, rien si déjà là. Ne pas remplacer par un upsert qui écraserait les stats existantes.
+- **`LS_MIGRATED = "fil-migrated"`** : clé localStorage qui évite de reproposer la migration à chaque login. Ne pas la supprimer.
+- **La popup migration est déclenchée dans AccountScreen** (useEffect sur `authUser + profile`), pas dans App. Si on refactorise AccountScreen, conserver ce useEffect.
+- **`match_players.user_id` est nullable** — les guests sans compte continuent de fonctionner avec `player_token` uniquement. Ne pas rendre la colonne NOT NULL.
+- **Mettre à jour `v5.X` dans le menu avant chaque commit** (grep `v5.` dans App.jsx, l.~1862).
+
+---
+
 ## Session du 2026-06-16 — v5.20 → v5.24
 
 ### Ce qu'on a fait
