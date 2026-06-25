@@ -28,6 +28,71 @@ Lis CLAUDE.md et SESSION_LOG.md. Dis-moi en 3 lignes où on en est et ce qu'on a
 
 ---
 
+## Session du 2026-06-25 — v5.27
+
+### Ce qu'on a fait
+
+**Système Elo + Rangs**
+
+Helpers top-level ajoutés (avant `syncProfile`) :
+- `VERSUS_RANKS` / `SOLO_RANKS` : tableaux de paliers avec `min`, `nextMin`, `name`
+- `getRankInfo(score, ranks)` → `{ name, min, nextMin, progress }` (progress 0→1 vers rang suivant)
+- `computeVersusEloGain(myElo, oppElo, result)` → gain arrondi (K=32, formule classique)
+- `computeSoloScoreDelta(difficulty, isOptimal, abandoned)` → delta points
+- `updateSoloScore(userId, delta)` → fetch `solo_score` en DB, applique delta, plancher 800, UPDATE
+
+**Solo Score** (cumulatif, plancher 800) :
+- Abandon : Facile -3, Moyen/Difficile -5
+- Fini non-optimal : +5 / +10 / +15
+- Fini optimal : +12 / +22 / +35
+- Calculé dans l'`isAtEnd` effect de `Game` (victoire) et dans `handleAbandonClick` (abandon)
+- Ignoré si `difficultyUsed === "custom"` ou pas de `authUserId`
+
+**Versus Elo** (K=32, départ 1000) :
+- Calculé dans le `statsTracked` effect de `VersusEndScreen`
+- Fetch `user_id` de l'adversaire via `getMatchPlayers(matchId)`, puis `profiles.versus_elo`
+- Si adversaire non connecté (guest) : Elo adversaire par défaut = 1000
+- Ignoré si `myAbandoned` ou pas de `authUserId`
+- Résultat : 1 victoire, 0 défaite, 0.5 égalité parfaite
+- Affiché sous le verdict : "+18 Elo Versus" / "-14 Elo Versus" (vert/ambre, state `eloGain`)
+
+**AccountScreen** — rangs affichés dans les cards Solo et Versus (uniquement si connecté) :
+- Nom du rang (18px bold)
+- Score exact (pts ou Elo)
+- Barre de progression (encre pour Solo, `versusMe` bleu pour Versus)
+- "X pts/Elo pour RangSuivant" en légende (masqué au rang Légende)
+
+**Props ajoutées** : `myVersusElo` (App → Game → VersusEndScreen), `eloGain` state dans VersusEndScreen
+
+**Paliers Versus** (départ 1000) : Figurant <950 · Second Rôle 950 · Premier Rôle 1150 · Vedette 1400 · Légende 1700
+**Paliers Solo** (départ 800) : Figurant 800 · Second Rôle 1000 · Premier Rôle 1350 · Vedette 1800 · Légende 2400
+
+### Bugs corrigés
+Aucun — uniquement features.
+
+### État actuel du code
+
+- **Version affichée : v5.27**
+- Commit pushé : `159b94c`
+- Fichier modifié : `src/App.jsx` uniquement
+- Mathieu a testé et confirmé : tout fonctionne
+
+### Ce qui reste à faire (backlog v5.28+)
+
+1. Redesign visuel (en cours sur Figma)
+2. `character_name` dans `credits` — migration DB
+3. `original_title` dans `works` — migration DB
+4. Phase 6 : App iOS via Capacitor
+
+### Pièges à éviter
+
+- **`updateSoloScore` fetch le `solo_score` courant en DB** avant d'appliquer le delta — ne pas passer le score depuis le state React (risque de valeur périmée en cas de parties rapprochées)
+- **Versus Elo non calculé si `myAbandoned`** — intentionnel : un abandon ne doit pas modifier l'Elo
+- **`eloGain` state dans VersusEndScreen** est initialisé à `null` et n'est affiché que si `eloGain !== null && authUserId` — ne pas afficher si la partie n'a pas pu calculer l'Elo (adversaire guest, erreur réseau, etc.)
+- **`myVersusElo` passé comme snapshot** depuis `profile?.versus_elo` au moment du rendu de Game — correct car l'Elo ne change qu'en fin de partie
+
+---
+
 ## Session du 2026-06-25 — v5.26 (suite)
 
 ### Ce qu'on a fait
