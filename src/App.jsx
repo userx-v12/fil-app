@@ -1266,6 +1266,54 @@ function Rule({ num, text, C }) {
 // APP
 // =========================================================================
 
+// =========================================================================
+// ELO + RANGS
+// =========================================================================
+
+const VERSUS_RANKS = [
+  { name: "Figurant",      min: 0,    nextMin: 950  },
+  { name: "Second Rôle",  min: 950,  nextMin: 1150 },
+  { name: "Premier Rôle", min: 1150, nextMin: 1400 },
+  { name: "Vedette",      min: 1400, nextMin: 1700 },
+  { name: "Légende",      min: 1700, nextMin: null  },
+];
+
+const SOLO_RANKS = [
+  { name: "Figurant",      min: 800,  nextMin: 1000 },
+  { name: "Second Rôle",  min: 1000, nextMin: 1350 },
+  { name: "Premier Rôle", min: 1350, nextMin: 1800 },
+  { name: "Vedette",      min: 1800, nextMin: 2400 },
+  { name: "Légende",      min: 2400, nextMin: null  },
+];
+
+function getRankInfo(score, ranks) {
+  let rank = ranks[0];
+  for (const r of ranks) { if (score >= r.min) rank = r; else break; }
+  const progress = rank.nextMin
+    ? Math.min(1, (score - rank.min) / (rank.nextMin - rank.min))
+    : 1;
+  return { ...rank, progress };
+}
+
+function computeVersusEloGain(myElo, oppElo, result) {
+  const E = 1 / (1 + Math.pow(10, (oppElo - myElo) / 400));
+  return Math.round(32 * (result - E));
+}
+
+function computeSoloScoreDelta(difficulty, isOptimal, abandoned) {
+  if (abandoned) return difficulty === "easy" ? -3 : -5;
+  const table = { easy: [5, 12], medium: [10, 22], hard: [15, 35] };
+  const [base, opt] = table[difficulty] || [5, 12];
+  return isOptimal ? opt : base;
+}
+
+async function updateSoloScore(userId, delta) {
+  if (!userId || delta === 0) return;
+  const { data } = await supabase.from("profiles").select("solo_score").eq("id", userId).single();
+  const next = Math.max(800, (data?.solo_score ?? 800) + delta);
+  await supabase.from("profiles").update({ solo_score: next }).eq("id", userId);
+}
+
 // Lit les stats depuis localStorage et les pousse vers profiles (appelé après chaque partie)
 async function pushStatsToProfile(userId) {
   if (!userId) return;
@@ -1757,6 +1805,7 @@ export default function App() {
               versusStreak={versusStreak}
               onVersusRoundResult={handleVersusRoundResult}
               authUserId={authUser?.id ?? null}
+              myVersusElo={profile?.versus_elo ?? 1000}
               onStatsSync={authUser ? refreshProfile : null}
               themeColors={C} glass={glass} glassDark={glassDark} theme={theme} />
       )}
@@ -1880,7 +1929,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.26</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.27</div>
     </div>
   );
 }
@@ -2199,7 +2248,7 @@ function Star({ fill, size, color, emptyColor }) {
 // GAME
 // =========================================================================
 
-function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart, versusContext, onStartRematch, onJoinRematch, versusStreak, onVersusRoundResult, authUserId, onStatsSync, themeColors, glass, glassDark, theme }) {
+function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart, versusContext, onStartRematch, onJoinRematch, versusStreak, onVersusRoundResult, authUserId, myVersusElo, onStatsSync, themeColors, glass, glassDark, theme }) {
   const C = themeColors;
   const isVersus = !!versusContext;
   const [path, setPath] = useState([{ type: "movie", data: challenge.start }]);
@@ -2403,8 +2452,13 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
         }
         const optSteps = challenge.optimal?.length > 0
           ? Math.max(0, Math.floor((challenge.optimal.length - 1) / 2)) : null;
-        if (optSteps !== null && finalSteps <= optSteps) incSoloOptimal();
+        const isOptimal = optSteps !== null && finalSteps <= optSteps;
+        if (isOptimal) incSoloOptimal();
         addSoloHints(hintsUsed);
+        if (authUserId && challenge.difficultyUsed && challenge.difficultyUsed !== "custom") {
+          const delta = computeSoloScoreDelta(challenge.difficultyUsed, isOptimal, false);
+          updateSoloScore(authUserId, delta).catch(() => {});
+        }
         pushStatsToProfile(authUserId).then(() => onStatsSync?.()).catch(() => {});
       }
     }
@@ -2539,6 +2593,10 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
     } else {
       incSoloAbandons();
       addSoloHints(hintsUsed);
+      if (authUserId && challenge.difficultyUsed && challenge.difficultyUsed !== "custom") {
+        const delta = computeSoloScoreDelta(challenge.difficultyUsed, false, true);
+        updateSoloScore(authUserId, delta).catch(() => {});
+      }
       pushStatsToProfile(authUserId).then(() => onStatsSync?.()).catch(() => {});
     }
   }
@@ -2574,6 +2632,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
             streak={versusStreak}
             onRoundResult={onVersusRoundResult}
             authUserId={authUserId}
+            myVersusElo={myVersusElo}
             onStatsSync={onStatsSync}
             themeColors={C} glass={glass} glassDark={glassDark} />
         </GameShell>
@@ -3350,7 +3409,7 @@ function VersusEndScreen({
   optimalSteps, optimalPath,
   startWork, endWork,
   onExit, onStartRematch, onJoinRematch,
-  streak, onRoundResult, authUserId, onStatsSync,
+  streak, onRoundResult, authUserId, myVersusElo, onStatsSync,
   themeColors, glass, glassDark
 }) {
   const C = themeColors;
@@ -3365,6 +3424,7 @@ function VersusEndScreen({
   const [opponentLiveHydrated, setOpponentLiveHydrated] = useState(null);
   const [rematchReady, setRematchReady] = useState(false);
   const [requestingRematch, setRequestingRematch] = useState(false);
+  const [eloGain, setEloGain] = useState(null);
   const statsTrackedRef = useRef(false);
 
   // Enregistre victoire/défaite en localStorage une seule fois quand bothDone
@@ -3384,6 +3444,26 @@ function VersusEndScreen({
     else if (iLost) incrementVersusLosses();
     if (!myAbandoned && optimalSteps !== null && mySteps <= optimalSteps) incVersusOptimal();
     addVersusHints(myHintsUsed);
+    // Elo Versus
+    if (authUserId && !myAbandoned) {
+      (async () => {
+        try {
+          const players = await getMatchPlayers(matchId);
+          const opp = players.find(p => p.user_id && p.user_id !== authUserId);
+          let oppElo = 1000;
+          if (opp?.user_id) {
+            const { data } = await supabase.from("profiles").select("versus_elo").eq("id", opp.user_id).single();
+            oppElo = data?.versus_elo ?? 1000;
+          }
+          const result = iWon ? 1 : iLost ? 0 : 0.5;
+          const gain = computeVersusEloGain(myVersusElo ?? 1000, oppElo, result);
+          const { data: cur } = await supabase.from("profiles").select("versus_elo").eq("id", authUserId).single();
+          const next = Math.max(0, (cur?.versus_elo ?? 1000) + gain);
+          await supabase.from("profiles").update({ versus_elo: next }).eq("id", authUserId);
+          setEloGain(gain);
+        } catch {}
+      })();
+    }
     pushStatsToProfile(authUserId).then(() => onStatsSync?.()).catch(() => {});
     // Marque le salon "finished" (sinon la revanche ne peut jamais réclamer le reset)
     finishMatch(matchId).catch(() => {});
@@ -3578,8 +3658,15 @@ function VersusEndScreen({
           </div>
 
           {streak?.count >= 2 && (
-            <div style={{ fontSize: 12, fontWeight: 700, color: C.amber, marginBottom: 16, letterSpacing: 0.3 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.amber, marginBottom: 8, letterSpacing: 0.3 }}>
               🔥 {streak.winner === "me" ? "Toi" : opponentName} : {streak.count} victoires de suite
+            </div>
+          )}
+
+          {eloGain !== null && authUserId && (
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 16, letterSpacing: 0.2,
+              color: eloGain >= 0 ? C.green : C.amber }}>
+              {eloGain >= 0 ? "+" : ""}{eloGain} Elo Versus
             </div>
           )}
 
@@ -5173,6 +5260,9 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
     if (e.key === "Escape") setEditing(false);
   }
 
+  const soloRank   = isLoggedIn ? getRankInfo(profile.solo_score   ?? 800,  SOLO_RANKS)   : null;
+  const versusRank = isLoggedIn ? getRankInfo(profile.versus_elo  ?? 1000, VERSUS_RANKS) : null;
+
   const sectionLabel = { fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, marginBottom: 14, fontWeight: 600 };
   const statRow = { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${C.hairline}` };
   const statLabel = { fontSize: 13, color: C.inkSoft, fontWeight: 500 };
@@ -5275,6 +5365,23 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
       {/* Stats Solo */}
       <div style={{ ...glass, borderRadius: 22, padding: 20, marginBottom: 16 }}>
         <div style={sectionLabel}>Solo</div>
+        {soloRank && (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+              <span style={{ fontSize: 18, fontWeight: 800, color: C.ink, letterSpacing: -0.5 }}>{soloRank.name}</span>
+              <span style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>{profile.solo_score ?? 800} pts</span>
+            </div>
+            <div style={{ height: 5, borderRadius: 99, background: C.hairline, overflow: "hidden" }}>
+              <div style={{ height: "100%", borderRadius: 99, background: C.ink,
+                width: `${Math.round(soloRank.progress * 100)}%`, transition: "width .4s" }} />
+            </div>
+            {soloRank.nextMin && (
+              <div style={{ fontSize: 10, color: C.inkMute, marginTop: 4, textAlign: "right" }}>
+                {soloRank.nextMin - (profile.solo_score ?? 800)} pts pour {SOLO_RANKS.find(r => r.min === soloRank.nextMin)?.name}
+              </div>
+            )}
+          </div>
+        )}
         <div style={{ ...statRow, borderTop: `1px solid ${C.hairline}` }}>
           <span style={statLabel}>Parties jouées</span>
           <span style={statValue}>{isLoggedIn ? (profile.solo_games || 0) : gamesPlayed}</span>
@@ -5312,6 +5419,23 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
       {/* Stats Versus */}
       <div style={{ ...glass, borderRadius: 22, padding: 20, marginBottom: 16 }}>
         <div style={sectionLabel}>Versus</div>
+        {versusRank && (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+              <span style={{ fontSize: 18, fontWeight: 800, color: C.ink, letterSpacing: -0.5 }}>{versusRank.name}</span>
+              <span style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>{profile.versus_elo ?? 1000} Elo</span>
+            </div>
+            <div style={{ height: 5, borderRadius: 99, background: C.hairline, overflow: "hidden" }}>
+              <div style={{ height: "100%", borderRadius: 99, background: C.versusMe,
+                width: `${Math.round(versusRank.progress * 100)}%`, transition: "width .4s" }} />
+            </div>
+            {versusRank.nextMin && (
+              <div style={{ fontSize: 10, color: C.inkMute, marginTop: 4, textAlign: "right" }}>
+                {versusRank.nextMin - (profile.versus_elo ?? 1000)} Elo pour {VERSUS_RANKS.find(r => r.min === versusRank.nextMin)?.name}
+              </div>
+            )}
+          </div>
+        )}
         <div style={{ ...statRow, borderTop: `1px solid ${C.hairline}` }}>
           <span style={statLabel}>Victoires</span>
           <span style={{ ...statValue, color: C.green }}>{versusWins}</span>
