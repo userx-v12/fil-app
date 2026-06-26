@@ -650,6 +650,16 @@ async function saveCustomPick(matchId, currentPendingChange, role, film) {
   if (error) throw error;
 }
 
+async function clearCustomPick(matchId, currentPendingChange, role) {
+  const updated = { ...(currentPendingChange || {}) };
+  delete updated[role];
+  delete updated.readySlots; // reset les "OK pour moi" puisque le choix a changé
+  const { error } = await supabase.from("matches")
+    .update({ pending_change: updated })
+    .eq("id", matchId);
+  if (error) throw error;
+}
+
 async function updatePlayerProgress(matchPlayerId, { currentPath, currentSteps, hintsUsed }) {
   const update = {};
   if (currentPath !== undefined) update.current_path = currentPath;
@@ -1687,7 +1697,7 @@ export default function App() {
       const match = await createMatch({
         startWork: placeholder, endWork: placeholder,
         optimalSteps: 0, difficulty: "easy",
-        victoryCondition: "hybrid", customMode: false,
+        victoryCondition: "hybrid", customMode: true,
       });
       const name = getStoredPlayerName() || "Joueur";
       await joinMatch(match.id, name, 1, authUser?.id ?? null);
@@ -1998,7 +2008,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.30</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.31</div>
     </div>
   );
 }
@@ -4796,7 +4806,7 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
           <div style={{ marginBottom: 12 }}>
             <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 8 }}>Condition de victoire</div>
             <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
-              {[{ key: "hybrid", label: "Étapes" }, { key: "time", label: "Temps" }].map(({ key, label }) => {
+              {[{ key: "time", label: "Temps" }, { key: "hybrid", label: "Étapes" }].map(({ key, label }) => {
                 const active = (match.victory_condition || "hybrid") === key;
                 return (
                   <button key={key} onClick={() => handleSetVictoryCondition(key)} disabled={locked}
@@ -4814,7 +4824,7 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
           <div style={{ marginBottom: 12 }}>
             <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 8 }}>Type de partie</div>
             <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
-              {[{ key: false, label: "Standard" }, { key: true, label: "Sur-mesure" }].map(({ key, label }) => {
+              {[{ key: true, label: "Sur-mesure" }, { key: false, label: "Standard" }].map(({ key, label }) => {
                 const active = !!match.custom_mode === key;
                 return (
                   <button key={String(key)} onClick={() => handleToggleCustomMode(key)} disabled={locked}
@@ -4922,6 +4932,15 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
                         <div style={{ fontWeight: 700, fontSize: 15, color: C.ink }}>{myPickWork.title}</div>
                         <div style={{ fontSize: 11, color: C.inkMute }}>{myPickWork.year}</div>
                       </div>
+                      <button onClick={async () => {
+                        try { await clearCustomPick(match.id, match.pending_change, myRole); }
+                        catch (e) { console.error(e); }
+                      }}
+                        style={{ background: "none", border: `1px solid ${C.hairline}`, borderRadius: 99,
+                          padding: "5px 12px", fontSize: 11, fontWeight: 700, letterSpacing: 0.5,
+                          color: C.inkSoft, cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}>
+                        Modifier
+                      </button>
                     </div>
                   ) : <Spinner label="Chargement…" themeColors={C} />
                 ) : (
