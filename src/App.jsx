@@ -474,9 +474,11 @@ async function getCandidatePool(prefs, limit = 500, forHard = false) {
   if (filterMode === "include") {
     if (prefs.includeGenres?.length > 0) {
       const included = new Set(prefs.includeGenres.map(Number));
+      // Un film est exclu s'il possède au moins un genre décoché (absent de la liste cochée)
+      const excluded = new Set(Object.keys(GENRES).map(Number).filter(g => !included.has(g)));
       return data.filter(m => {
         const genres = Array.isArray(m.genre_ids) ? m.genre_ids : [];
-        return genres.some(g => included.has(Number(g)));
+        return !genres.some(g => excluded.has(Number(g)));
       });
     }
     return data; // include mode + liste vide = aucun filtre genre
@@ -2041,7 +2043,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.50</div>
+      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.51</div>
     </div>
   );
 }
