@@ -28,6 +28,113 @@ Lis CLAUDE.md et SESSION_LOG.md. Dis-moi en 3 lignes où on en est et ce qu'on a
 
 ---
 
+## Session du 2026-06-25 — v5.29
+
+### Ce qu'on a fait
+
+**Bug : nouveau compte classé "Second Rôle" au lieu de "Figurant"**
+- Cause : `profiles.versus_elo` a une valeur par défaut de 1000 en DB, et le rang "Second Rôle" commence à 950 Elo → tout nouveau compte démarrait directement en Second Rôle sans avoir joué.
+- Solution choisie : Option B (affichage conditionnel) — si `versusWins + versusLosses === 0`, afficher "Non classé" à la place du nom de rang, masquer la barre de progression et le texte "X Elo pour rang suivant". L'Elo (1000) reste affiché.
+- Fix : dans le bloc `versusRank` d'AccountScreen, ternaire sur `(versusWins + versusLosses) === 0`.
+- Solo non affecté : `solo_score` null/0 → `getRankInfo(0, SOLO_RANKS)` retourne Figurant par défaut (la boucle démarre avec `ranks[0]`).
+
+### Bugs corrigés
+
+**Versus — rang "Non classé" pour les comptes sans partie jouée**
+- Cause : `versus_elo = 1000` (défaut DB) tombe dans la plage Second Rôle (950–1149)
+- Fix : affichage conditionnel sur `versusWins + versusLosses`, pas de migration DB
+
+### État actuel du code
+
+- **Version affichée : v5.29**
+- Commit pushé : `3869391`
+- Fichier modifié : `src/App.jsx` uniquement
+- Mathieu a testé et confirmé
+
+### Ce qui reste à faire (backlog v5.30+)
+
+1. Parties custom non comptées dans solo_games (résiduel bug #5 v5.28)
+2. Redesign visuel (en cours sur Figma)
+3. `character_name` dans `credits` — migration DB
+4. `original_title` dans `works` — migration DB
+5. Phase 6 : App iOS via Capacitor
+
+### Pièges à éviter
+
+- **Ne pas changer la valeur par défaut de `versus_elo` en DB** — elle reste à 1000 (référence standard pour K=32). Le "Non classé" est géré côté affichage uniquement.
+- **`versusWins` et `versusLosses` sont déjà calculés** dans AccountScreen avant le bloc d'affichage — pas besoin de relire `profile` directement dans le JSX.
+
+---
+
+## Session du 2026-06-25 — v5.28
+
+### Ce qu'on a fait
+
+**Audit complet de l'intégration Auth + corrections**
+
+Audit autonome demandé par Mathieu (rapport 🔴/🟡/🟢 sans toucher au code d'abord), puis corrections validées.
+
+**Bug #1 🔴 — Formule iWon/iLost désynchée du verdict affiché**
+- Cause : le `statsTracked` effect de `VersusEndScreen` utilisait étapes → temps pour décider victoire/défaite, ignorant les indices et le `victoryCondition`. Le verdict affiché utilise lui : étapes → indices → temps (mode Étapes) ou indices → temps → étapes (mode Temps).
+- Conséquence : mauvais compteurs localStorage (V/D) et mauvais delta Elo dans tous les cas de tiebreaker par indices.
+- Fix : remplacement des deux `const iWon`/`iLost` (l.3434) par une logique if/else qui mirror exactement le verdict, branchée sur `victoryCondition`.
+
+**Bug #3 🟡 — Register affichait "Vérifie ta boîte mail" même avec confirmation désactivée**
+- Cause : `signUp` retourne immédiatement une session si la confirmation est désactivée dans Supabase Dashboard, mais le code appelait toujours `setDone(true)`.
+- Fix : `const { data } = await signUp(...)` → si `data?.session` existe, ne pas montrer l'écran de confirmation (navigation via `SIGNED_IN`).
+
+**Bug #4 🟡 — Double `syncProfile` au reload**
+- Cause : `getSession()` ET `onAuthStateChange(INITIAL_SESSION)` appellent tous les deux `syncProfile` à l'initialisation.
+- Fix : suppression de `getSession()`. `onAuthStateChange` émet `INITIAL_SESSION` au subscribe en Supabase v2, ce qui suffit.
+
+**Bug #5 🟡 — `solo_games` en DB comptabilisait les parties Versus**
+- Cause : `pushStatsToProfile` copiait `loadGamesPlayed()` dans `solo_games`. Or `gamesPlayed` s'incrémente après chaque partie (solo + Versus) via `onGameFinished`.
+- Fix : `solo_games` calculé comme `loadSoloDiff("easy") + loadSoloDiff("medium") + loadSoloDiff("hard") + loadSoloAbandons()`. Même correction dans `handleMigrate`. Label AccountScreen renommé "Parties solo".
+- Caveat : les parties custom ("Sur Mesure") ne sont pas comptées (pas d'appel `incSoloDiff` pour `difficultyUsed === "custom"`).
+
+**Bug #6 🟡 — Flash "Non connecté" à la connexion**
+- Cause : `onSuccess()` naviguait vers AccountScreen immédiatement après `signInWithPassword`, avant que `onAuthStateChange` ait set `authUser` et `profile`.
+- Fix : navigation déplacée dans `onAuthStateChange` sur l'event `SIGNED_IN` (après `syncProfile`, donc `authUser` + `profile` sont tous les deux prêts). `onSuccess()` n'est plus appelé dans le login path, le spinner reste visible jusqu'au démontage du composant.
+
+**Bug #7 🟡 — Migration ne prévenait pas que les rangs Elo repartent de zéro**
+- Fix : ajout d'une ligne dans le popup migration : "Les rangs Elo repartent de zéro (non calculables rétroactivement)."
+
+### Bugs corrigés
+
+| # | Sévérité | Bug | Fix |
+|---|----------|-----|-----|
+| 1 | 🔴 | iWon/iLost ≠ verdict → Elo faux | Mirror exact du verdict dans statsTracked |
+| 3 | 🟡 | Register : fausse demande confirmation email | `data?.session` check après signUp |
+| 4 | 🟡 | Double syncProfile au reload | Suppression de getSession() |
+| 5 | 🟡 | solo_games = total all games | easy+medium+hard+abandons uniquement |
+| 6 | 🟡 | Flash "Non connecté" à connexion | Navigation via SIGNED_IN après syncProfile |
+| 7 | 🟡 | Migration : rangs silencieusement réinitialisés | Note ajoutée dans le popup |
+
+### État actuel du code
+
+- **Version affichée : v5.28**
+- Commit pushé : `19d7189`
+- Fichier modifié : `src/App.jsx` uniquement
+- Mathieu a validé le rapport d'audit
+
+### Ce qui reste à faire (backlog v5.29+)
+
+1. **Parties custom non comptées dans solo_games** — résiduel du bug #5, nécessite une nouvelle clé LS (`fil-solo-custom`) ou une colonne DB séparée
+2. Redesign visuel (en cours sur Figma)
+3. `character_name` dans `credits` — migration DB
+4. `original_title` dans `works` — migration DB
+5. Phase 6 : App iOS via Capacitor
+
+### Pièges à éviter
+
+- **`iWon`/`iLost` dans `statsTracked`** : branchés sur `victoryCondition`. Ne JAMAIS revenir à la formule étapes→temps sans `victoryCondition`. Le mode Temps utilise indices→temps→étapes.
+- **Navigation post-login via `SIGNED_IN`** dans `onAuthStateChange`, pas depuis `handleSubmit`. Si on touche à `AuthScreen`, ne pas remettre `onSuccess()` dans le login path.
+- **`solo_games` n'inclut pas les parties custom** — intentionnel pour l'instant. Ne pas confondre avec `gamesPlayed` (localStorage, toutes parties confondues) qui reste utilisé pour l'affichage dans le Menu.
+- **`getSession()` supprimé** — ne pas le rajouter. Supabase v2 émet `INITIAL_SESSION` via `onAuthStateChange` dès le subscribe, ce qui couvre le cas du reload.
+- **`onSuccess` prop d'`AuthScreen`** : actuellement passé mais jamais appelé à l'intérieur. Dead prop, pas un bug.
+
+---
+
 ## Session du 2026-06-25 — v5.27
 
 ### Ce qu'on a fait

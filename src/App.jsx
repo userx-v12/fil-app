@@ -1093,6 +1093,8 @@ function TopRoundButton({ position, onClick, children, title, themeColors, zInde
     ? { left: "max(62px, calc(50% - 240px + 62px))" }
     : position === "center"
     ? { left: "calc(50% - 19px)" }
+    : position === "right2"
+    ? { right: "max(62px, calc(50% - 240px + 62px))" }
     : { right: "max(16px, calc(50% - 240px + 16px))" };
   return (
     <button onClick={onClick} title={title}
@@ -1271,19 +1273,39 @@ function Rule({ num, text, C }) {
 // =========================================================================
 
 const VERSUS_RANKS = [
-  { name: "Figurant",      min: 0,    nextMin: 950  },
-  { name: "Second Rôle",  min: 950,  nextMin: 1150 },
-  { name: "Premier Rôle", min: 1150, nextMin: 1400 },
-  { name: "Vedette",      min: 1400, nextMin: 1700 },
-  { name: "Légende",      min: 1700, nextMin: null  },
+  { name: "Figurant I",        min: 0,    nextMin: 317  },
+  { name: "Figurant II",       min: 317,  nextMin: 633  },
+  { name: "Figurant III",      min: 633,  nextMin: 950  },
+  { name: "Second Rôle I",    min: 950,  nextMin: 1017 },
+  { name: "Second Rôle II",   min: 1017, nextMin: 1083 },
+  { name: "Second Rôle III",  min: 1083, nextMin: 1150 },
+  { name: "Premier Rôle I",   min: 1150, nextMin: 1234 },
+  { name: "Premier Rôle II",  min: 1234, nextMin: 1317 },
+  { name: "Premier Rôle III", min: 1317, nextMin: 1400 },
+  { name: "Vedette I",         min: 1400, nextMin: 1500 },
+  { name: "Vedette II",        min: 1500, nextMin: 1600 },
+  { name: "Vedette III",       min: 1600, nextMin: 1700 },
+  { name: "Légende I",         min: 1700, nextMin: 2000 },
+  { name: "Légende II",        min: 2000, nextMin: 2300 },
+  { name: "Légende III",       min: 2300, nextMin: null  },
 ];
 
 const SOLO_RANKS = [
-  { name: "Figurant",      min: 800,  nextMin: 1000 },
-  { name: "Second Rôle",  min: 1000, nextMin: 1350 },
-  { name: "Premier Rôle", min: 1350, nextMin: 1800 },
-  { name: "Vedette",      min: 1800, nextMin: 2400 },
-  { name: "Légende",      min: 2400, nextMin: null  },
+  { name: "Figurant I",        min: 800,  nextMin: 867  },
+  { name: "Figurant II",       min: 867,  nextMin: 934  },
+  { name: "Figurant III",      min: 934,  nextMin: 1000 },
+  { name: "Second Rôle I",    min: 1000, nextMin: 1117 },
+  { name: "Second Rôle II",   min: 1117, nextMin: 1234 },
+  { name: "Second Rôle III",  min: 1234, nextMin: 1350 },
+  { name: "Premier Rôle I",   min: 1350, nextMin: 1500 },
+  { name: "Premier Rôle II",  min: 1500, nextMin: 1650 },
+  { name: "Premier Rôle III", min: 1650, nextMin: 1800 },
+  { name: "Vedette I",         min: 1800, nextMin: 2000 },
+  { name: "Vedette II",        min: 2000, nextMin: 2200 },
+  { name: "Vedette III",       min: 2200, nextMin: 2400 },
+  { name: "Légende I",         min: 2400, nextMin: 2800 },
+  { name: "Légende II",        min: 2800, nextMin: 3200 },
+  { name: "Légende III",       min: 3200, nextMin: null  },
 ];
 
 function getRankInfo(score, ranks) {
@@ -1359,6 +1381,7 @@ export default function App() {
   const [prefs, setPrefs] = useState(loadPrefs);
   const [gamesPlayed, setGamesPlayed] = useState(loadGamesPlayed);
   const [showInfo, setShowInfo] = useState(false);
+  const [showRankPopup, setShowRankPopup] = useState(false);
   const [versusCode, setVersusCode] = useState(null); // Code de partie Versus en cours
   const [versusContext, setVersusContext] = useState(null); // Contexte du jeu Versus { matchId, code, myPlayerId, mySlot, myName, opponentName, opponentPlayerId, victoryCondition }
   const [versusPrefs, setVersusPrefs] = useState(() => ({ ...DEFAULT_PREFS })); // Prefs Versus indépendantes des prefs globales, partagées avec le Lobby (Mode/Difficulté/filtres avancés uniquement, le reste vit en DB)
@@ -1760,11 +1783,64 @@ export default function App() {
           <TopRoundButton position="left2" onClick={toggleTheme} title={theme === "light" ? "Mode sombre" : "Mode clair"} themeColors={C}>
             <ThemeIcon isLight={theme === "light"} color={C.ink} />
           </TopRoundButton>
+          <TopRoundButton position="right2" onClick={() => setShowRankPopup(v => !v)} title="Mon rang" themeColors={C}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill={C.ink} stroke="none">
+              <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+            </svg>
+          </TopRoundButton>
           <TopRoundButton position="right" onClick={() => setScreen("account")} title="Compte" themeColors={C}>
             <AccountIcon color={C.ink} />
           </TopRoundButton>
         </>
       )}
+      {showRankPopup && (() => {
+        const sr = profile ? getRankInfo(profile.solo_score ?? 800, SOLO_RANKS) : null;
+        const vr = profile ? getRankInfo(profile.versus_elo ?? 0, VERSUS_RANKS) : null;
+        return (
+          <div onClick={() => setShowRankPopup(false)}
+            style={{ position: "fixed", inset: 0, zIndex: 90 }}>
+            <div onClick={e => e.stopPropagation()}
+              style={{ position: "fixed", top: 62, right: "max(16px, calc(50% - 240px + 62px))",
+                ...glass, borderRadius: 16, padding: "14px 18px", minWidth: 190, zIndex: 91,
+                boxShadow: "0 8px 32px rgba(0,0,0,0.12)" }}>
+              {profile ? (
+                <>
+                  {sr && (
+                    <div style={{ marginBottom: vr ? 14 : 0 }}>
+                      <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", color: C.inkMute, fontWeight: 600, marginBottom: 4 }}>Solo</div>
+                      <div style={{ fontSize: 14, fontWeight: 800, color: C.ink, marginBottom: 5, letterSpacing: -0.3 }}>{sr.name}</div>
+                      <div style={{ height: 4, borderRadius: 99, background: C.hairline, overflow: "hidden" }}>
+                        <div style={{ height: "100%", borderRadius: 99, background: C.ink, width: `${Math.round(sr.progress * 100)}%` }} />
+                      </div>
+                      <div style={{ fontSize: 10, color: C.inkMute, marginTop: 3, textAlign: "right" }}>{profile.solo_score ?? 800} pts</div>
+                    </div>
+                  )}
+                  {vr && (
+                    <div>
+                      <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", color: C.inkMute, fontWeight: 600, marginBottom: 4 }}>Versus</div>
+                      <div style={{ fontSize: 14, fontWeight: 800, color: C.ink, marginBottom: 5, letterSpacing: -0.3 }}>{vr.name}</div>
+                      <div style={{ height: 4, borderRadius: 99, background: C.hairline, overflow: "hidden" }}>
+                        <div style={{ height: "100%", borderRadius: 99, background: C.versusMe, width: `${Math.round(vr.progress * 100)}%` }} />
+                      </div>
+                      <div style={{ fontSize: 10, color: C.inkMute, marginTop: 3, textAlign: "right" }}>{profile.versus_elo ?? 0} Elo</div>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div style={{ textAlign: "center" }}>
+                  <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 10 }}>Connecte-toi pour suivre ton rang</div>
+                  <button onClick={() => { setScreen("account"); setShowRankPopup(false); }}
+                    style={{ fontSize: 11, letterSpacing: 1.5, textTransform: "uppercase", fontWeight: 700,
+                      color: C.ink, background: "none", border: `1px solid ${C.hairline}`,
+                      borderRadius: 99, padding: "6px 14px", cursor: "pointer", fontFamily: "inherit" }}>
+                    Se connecter
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
       {showInfo && <InfoModal onClose={() => setShowInfo(false)} themeColors={C} glass={glass} glassDark={glassDark} />}
       {loadingChallenge && (
         <div style={{ position: "fixed", inset: 0, background: theme === "light" ? "rgba(250,250,250,0.7)" : "rgba(10,14,24,0.7)", backdropFilter: "blur(8px)",
@@ -1798,7 +1874,7 @@ export default function App() {
               versusStreak={versusStreak}
               onVersusRoundResult={handleVersusRoundResult}
               authUserId={authUser?.id ?? null}
-              myVersusElo={profile?.versus_elo ?? 1000}
+              myVersusElo={profile?.versus_elo ?? 0}
               onStatsSync={authUser ? refreshProfile : null}
               themeColors={C} glass={glass} glassDark={glassDark} theme={theme} />
       )}
@@ -1922,7 +1998,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.29</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.30</div>
     </div>
   );
 }
@@ -3459,15 +3535,15 @@ function VersusEndScreen({
         try {
           const players = await getMatchPlayers(matchId);
           const opp = players.find(p => p.user_id && p.user_id !== authUserId);
-          let oppElo = 1000;
+          let oppElo = 0;
           if (opp?.user_id) {
             const { data } = await supabase.from("profiles").select("versus_elo").eq("id", opp.user_id).single();
-            oppElo = data?.versus_elo ?? 1000;
+            oppElo = data?.versus_elo ?? 0;
           }
           const result = iWon ? 1 : iLost ? 0 : 0.5;
-          const gain = computeVersusEloGain(myVersusElo ?? 1000, oppElo, result);
+          const gain = computeVersusEloGain(myVersusElo ?? 0, oppElo, result);
           const { data: cur } = await supabase.from("profiles").select("versus_elo").eq("id", authUserId).single();
-          const next = Math.max(0, (cur?.versus_elo ?? 1000) + gain);
+          const next = Math.max(0, (cur?.versus_elo ?? 0) + gain);
           await supabase.from("profiles").update({ versus_elo: next }).eq("id", authUserId);
           setEloGain(gain);
         } catch {}
@@ -5274,7 +5350,7 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
   }
 
   const soloRank   = isLoggedIn ? getRankInfo(profile.solo_score   ?? 800,  SOLO_RANKS)   : null;
-  const versusRank = isLoggedIn ? getRankInfo(profile.versus_elo  ?? 1000, VERSUS_RANKS) : null;
+  const versusRank = isLoggedIn ? getRankInfo(profile.versus_elo ?? 0, VERSUS_RANKS) : null;
 
   const sectionLabel = { fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, marginBottom: 14, fontWeight: 600 };
   const statRow = { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${C.hairline}` };
@@ -5436,24 +5512,17 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
         {versusRank && (
           <div style={{ marginBottom: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
-              {(versusWins + versusLosses) === 0
-                ? <span style={{ fontSize: 18, fontWeight: 800, color: C.inkSoft, letterSpacing: -0.5 }}>Non classé</span>
-                : <span style={{ fontSize: 18, fontWeight: 800, color: C.ink, letterSpacing: -0.5 }}>{versusRank.name}</span>
-              }
-              <span style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>{profile.versus_elo ?? 1000} Elo</span>
+              <span style={{ fontSize: 18, fontWeight: 800, color: C.ink, letterSpacing: -0.5 }}>{versusRank.name}</span>
+              <span style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>{profile.versus_elo ?? 0} Elo</span>
             </div>
-            {(versusWins + versusLosses) > 0 && (
-              <>
-                <div style={{ height: 5, borderRadius: 99, background: C.hairline, overflow: "hidden" }}>
-                  <div style={{ height: "100%", borderRadius: 99, background: C.versusMe,
-                    width: `${Math.round(versusRank.progress * 100)}%`, transition: "width .4s" }} />
-                </div>
-                {versusRank.nextMin && (
-                  <div style={{ fontSize: 10, color: C.inkMute, marginTop: 4, textAlign: "right" }}>
-                    {versusRank.nextMin - (profile.versus_elo ?? 1000)} Elo pour {VERSUS_RANKS.find(r => r.min === versusRank.nextMin)?.name}
-                  </div>
-                )}
-              </>
+            <div style={{ height: 5, borderRadius: 99, background: C.hairline, overflow: "hidden" }}>
+              <div style={{ height: "100%", borderRadius: 99, background: C.versusMe,
+                width: `${Math.round(versusRank.progress * 100)}%`, transition: "width .4s" }} />
+            </div>
+            {versusRank.nextMin && (
+              <div style={{ fontSize: 10, color: C.inkMute, marginTop: 4, textAlign: "right" }}>
+                {versusRank.nextMin - (profile.versus_elo ?? 0)} Elo pour {VERSUS_RANKS.find(r => r.min === versusRank.nextMin)?.name}
+              </div>
             )}
           </div>
         )}
