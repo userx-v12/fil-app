@@ -1375,12 +1375,20 @@ async function pushStatsToProfile(userId) {
 
 // Crée la ligne profiles si elle n'existe pas encore, puis la retourne
 async function syncProfile(user) {
-  await supabase.from("profiles").upsert(
+  const { error } = await supabase.from("profiles").upsert(
     { id: user.id },
     { onConflict: "id", ignoreDuplicates: true }
   );
+  if (error) console.error("syncProfile upsert failed:", error.message);
   const { data } = await supabase.from("profiles").select("*").eq("id", user.id).single();
-  return data || null;
+  if (!data) {
+    // Retry sans ignoreDuplicates si la ligne n'existe toujours pas
+    const { error: e2 } = await supabase.from("profiles").upsert({ id: user.id }, { onConflict: "id" });
+    if (e2) console.error("syncProfile retry failed:", e2.message);
+    const { data: d2 } = await supabase.from("profiles").select("*").eq("id", user.id).single();
+    return d2 || null;
+  }
+  return data;
 }
 
 export default function App() {
@@ -2035,7 +2043,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.43</div>
+      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.44</div>
     </div>
   );
 }
