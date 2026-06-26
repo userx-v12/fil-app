@@ -28,6 +28,64 @@ Lis CLAUDE.md et SESSION_LOG.md. Dis-moi en 3 lignes où on en est et ce qu'on a
 
 ---
 
+## Session du 2026-06-26 — v5.36 → v5.37
+
+### Ce qu'on a fait
+
+**Audit 1 — Auth / Elo / Rangs (lecture seule)**
+
+Rapport 🔴/🟡/🟢 sur le code Auth, Elo et Rangs produit depuis la session précédente.
+- 🔴 : aucun risque bloquant identifié
+- 🟡 identifiés : `pushStatsToProfile` overwrite total (multi-appareil), `updateSoloScore` double round-trip, `refreshProfile` appelle `syncProfile` inutilement, Versus Elo re-SELECT redondant, `onSuccess` prop morte dans `AuthScreen`
+- 🟢 confirmés : `screenRef` fix, `PASSWORD_RECOVERY`, `ignoreDuplicates`, race condition Elo non critique, `delete_my_account` RPC SECURITY DEFINER
+
+**Audit 2 — Dead code global App.jsx (lecture seule)**
+
+Rapport 🔴/🟡/🟢 sur le dead code et les duplications.
+- 🟡 identifiés : `LogoMark` défini mais jamais utilisé, `EyeIcon` défini 3 fois identiquement, `inputStyle` dupliqué × 3, `pushStatsToProfile`/`handleMigrate` body quasi-identique
+- 🟢 confirmés : tous les `loadXxx`/`incXxx`, `GRADIENT_PALETTE`, `Background`, `WaitingDot`, `eloGain`, `computeSoloScoreDelta`, etc. — tout utilisé
+
+**v5.36 — Nettoyage dead code**
+- `LogoMark` (composant SVG, aucun usage) : supprimé (lignes 1071-1079 avant suppression)
+- `EyeIcon` : 3 définitions inline (dans `PasswordResetScreen`, `AuthScreen`, `AccountScreen`) fusionnées en un composant top-level à l. ~1138 — props `visible`, `color`, `size` (défaut 18). `AccountScreen` utilisait `size=16`, préservé.
+- Prop `onSuccess` de `AuthScreen` : retirée de la signature ET du call site (l.1927) — navigation se fait via `onAuthStateChange`, prop n'était jamais appelée
+
+**v5.37 — Optimisations DB**
+- `refreshProfile` (l.~1407) : ne plus appeler `syncProfile` (INSERT inutile + SELECT) → SELECT direct uniquement. Économise 1 round-trip à chaque fin de partie (solo et versus)
+- Versus Elo (l.~3565) : re-SELECT de `versus_elo` supprimé — `next` calculé directement depuis `myVersusElo` prop (déjà disponible, même valeur utilisée pour le calcul du gain). Économise 1 round-trip à chaque fin de partie Versus
+
+### Bugs corrigés
+Aucun bug — audit + nettoyage + optimisations uniquement.
+
+### État actuel du code
+
+- **Version affichée : v5.37**
+- Commits pushés : `ce4e770` (v5.36), `308a52b` (v5.37)
+- Fichier modifié : `src/App.jsx` uniquement
+
+### Ce qui reste à faire (backlog v5.38+)
+
+Points 🟡 non traités (demandent une RPC Supabase ou refonte plus large) :
+1. `updateSoloScore` : double round-trip SELECT+UPDATE → RPC `increment_solo_score(delta)` atomique
+2. `pushStatsToProfile` : overwrite total depuis localStorage → à terme, merge si multi-appareil
+3. `inputStyle` dupliqué dans 3 composants → constante partagée (cosmétique)
+4. `pushStatsToProfile`/`handleMigrate` : bodies quasi-identiques → factoriser
+
+Backlog produit :
+1. Parties "Sur Mesure" solo non comptées dans `solo_games` (résiduel v5.28)
+2. Redesign visuel (en cours sur Figma)
+3. `character_name` dans `credits` — migration DB
+4. `original_title` dans `works` — migration DB
+5. Phase 6 : App iOS via Capacitor
+
+### Pièges à éviter
+
+- **`EyeIcon` est maintenant top-level** (l.~1138) et nécessite `color` comme prop — ne pas redéfinir inline dans un composant
+- **`refreshProfile` ne crée plus la ligne `profiles`** — c'est `syncProfile` qui fait l'INSERT, appelé uniquement dans `onAuthStateChange`. `refreshProfile` suppose que la ligne existe déjà. Ne pas les confondre.
+- **Versus Elo `next` est calculé depuis `myVersusElo` prop** (snapshot début de partie) — cohérent avec le `gain` calculé sur la même base. Ne pas remettre le re-SELECT DB à la ligne 3565.
+
+---
+
 ## Session du 2026-06-26 — v5.35 (suite)
 
 ### Ce qu'on a fait
