@@ -1349,7 +1349,7 @@ function computeSoloScoreDelta(difficulty, isOptimal, abandoned) {
 async function updateSoloScore(userId, delta) {
   if (!userId || delta === 0) return;
   const { data } = await supabase.from("profiles").select("solo_score").eq("id", userId).single();
-  const next = Math.max(800, (data?.solo_score ?? 800) + delta);
+  const next = Math.max(0, (data?.solo_score ?? 0) + delta);
   await supabase.from("profiles").update({ solo_score: next }).eq("id", userId);
 }
 
@@ -1826,7 +1826,7 @@ export default function App() {
         </>
       )}
       {showRankPopup && (() => {
-        const sr = profile ? getRankInfo((profile.solo_score ?? 800) - 800, SOLO_RANKS) : null;
+        const sr = profile ? getRankInfo(profile.solo_score ?? 0, SOLO_RANKS) : null;
         const vr = profile ? getRankInfo(profile.versus_elo ?? 0, VERSUS_RANKS) : null;
         return (
           <div onClick={() => setShowRankPopup(false)}
@@ -1844,7 +1844,7 @@ export default function App() {
                       <div style={{ height: 4, borderRadius: 99, background: C.hairline, overflow: "hidden" }}>
                         <div style={{ height: "100%", borderRadius: 99, background: C.ink, width: `${Math.round(sr.progress * 100)}%` }} />
                       </div>
-                      <div style={{ fontSize: 10, color: C.inkMute, marginTop: 3, textAlign: "right" }}>{profile.solo_score ?? 800} pts</div>
+                      <div style={{ fontSize: 10, color: C.inkMute, marginTop: 3, textAlign: "right" }}>{profile.solo_score ?? 0} pts</div>
                     </div>
                   )}
                   {vr && (
@@ -2043,7 +2043,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.47</div>
+      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.48</div>
     </div>
   );
 }
@@ -5614,7 +5614,7 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
     if (e.key === "Escape") setEditing(false);
   }
 
-  const soloDisplayScore = isLoggedIn ? (profile.solo_score ?? 800) - 800 : 0;
+  const soloDisplayScore = isLoggedIn ? (profile.solo_score ?? 0) : 0;
   const soloRank   = isLoggedIn ? getRankInfo(soloDisplayScore, SOLO_RANKS) : null;
   const versusRank = isLoggedIn ? getRankInfo(profile.versus_elo ?? 0, VERSUS_RANKS) : null;
 
