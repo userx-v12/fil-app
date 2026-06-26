@@ -1348,9 +1348,7 @@ function computeSoloScoreDelta(difficulty, isOptimal, abandoned) {
 
 async function updateSoloScore(userId, delta) {
   if (!userId || delta === 0) return;
-  const { data } = await supabase.from("profiles").select("solo_score").eq("id", userId).single();
-  const next = Math.max(0, (data?.solo_score ?? 0) + delta);
-  await supabase.from("profiles").update({ solo_score: next }).eq("id", userId);
+  await supabase.rpc("increment_solo_score", { user_id: userId, delta });
 }
 
 // Lit les stats depuis localStorage et les pousse vers profiles (appelé après chaque partie)
@@ -2043,7 +2041,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.48</div>
+      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.49</div>
     </div>
   );
 }
