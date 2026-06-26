@@ -2034,7 +2034,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.41</div>
+      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.42</div>
     </div>
   );
 }
@@ -5570,6 +5570,7 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
   const soloEasy      = isLoggedIn ? (profile.solo_easy || 0)       : loadSoloDiff("easy");
   const soloMedium    = isLoggedIn ? (profile.solo_medium || 0)     : loadSoloDiff("medium");
   const soloHard      = isLoggedIn ? (profile.solo_hard || 0)       : loadSoloDiff("hard");
+  const soloCustom    = loadSoloCustom();
   const soloOptimal   = isLoggedIn ? (profile.solo_optimal || 0)    : loadSoloOptimal();
   const soloAbandons  = isLoggedIn ? (profile.solo_abandons || 0)   : loadSoloAbandons();
   const soloHints     = isLoggedIn ? (profile.solo_hints || 0)      : loadSoloHints();
@@ -5725,7 +5726,7 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
         )}
         <div style={{ ...statRow, borderTop: `1px solid ${C.hairline}` }}>
           <span style={statLabel}>Parties solo</span>
-          <span style={statValue}>{isLoggedIn ? (profile.solo_games || 0) : loadSoloDiff("easy") + loadSoloDiff("medium") + loadSoloDiff("hard") + loadSoloAbandons()}</span>
+          <span style={statValue}>{isLoggedIn ? (profile.solo_games || 0) : loadSoloDiff("easy") + loadSoloDiff("medium") + loadSoloDiff("hard") + soloCustom + loadSoloAbandons()}</span>
         </div>
         <div style={{ ...statRow, paddingLeft: 12 }}>
           <span style={{ ...statLabel, fontSize: 12, color: C.inkMute }}>Facile</span>
@@ -5738,6 +5739,10 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
         <div style={{ ...statRow, paddingLeft: 12 }}>
           <span style={{ ...statLabel, fontSize: 12, color: C.inkMute }}>Difficile</span>
           <span style={{ ...statValue, fontSize: 14 }}>{soloHard}</span>
+        </div>
+        <div style={{ ...statRow, paddingLeft: 12 }}>
+          <span style={{ ...statLabel, fontSize: 12, color: C.inkMute }}>Sur Mesure</span>
+          <span style={{ ...statValue, fontSize: 14 }}>{soloCustom}</span>
         </div>
         <div style={statRow}>
           <span style={statLabel}>Meilleur score</span>
