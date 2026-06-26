@@ -28,6 +28,48 @@ Lis CLAUDE.md et SESSION_LOG.md. Dis-moi en 3 lignes où on en est et ce qu'on a
 
 ---
 
+## Session du 2026-06-26 — v5.35 (suite)
+
+### Ce qu'on a fait
+
+**AccountScreen — deux blocs côte à côte (Pseudo + Compte)**
+- Les cards "Pseudo Versus" et "Compte connecté/déconnecté" fusionnées en deux blocs `flex: 1` côte à côte dans un `flex row`, `gap: 12`, `minHeight: 100`
+- Mode édition du pseudo : passe en pleine largeur (card full-width) pour éviter l'étroitesse
+- Boutons "Modifier" / "Déconnexion" / "Connexion" centrés via `alignSelf: "center"`
+- "Déco" renommé "Déconnexion" avec `fontSize: 9` + `whiteSpace: "nowrap"` pour afficher le mot en entier
+
+**AccountScreen — section Sécurité repliable**
+- Section Sécurité cachée par défaut, dépliable via bouton chevron — même pattern qu'Options du défi en Versus (state `showSecurity`, chevron SVG animé 180°)
+- Zone dangereuse (suppression de compte) déplacée à l'intérieur du bloc Sécurité replié, séparée par un séparateur rouge `${RED}30`
+- Plus de card séparée "Zone dangereuse" — tout est dans la même card repliable
+
+### Bugs corrigés
+Aucun bug — uniquement ajustements UI.
+
+### État actuel du code
+
+- **Version affichée : v5.35**
+- Commits : `53fe9bd` (v5.35 initial), `2a0de86` (centrage boutons), `e3d8172` (Déconnexion entier), `0931207` (Zone dangereuse dans Sécurité)
+- Build Vite propre (vérifié)
+- Fichier modifié : `src/App.jsx` uniquement
+
+### Ce qui reste à faire (backlog v5.36+)
+
+1. Parties "Sur Mesure" solo non comptées dans `solo_games` (résiduel v5.28)
+2. Redesign visuel (en cours sur Figma)
+3. `character_name` dans `credits` — migration DB
+4. `original_title` dans `works` — migration DB
+5. Phase 6 : App iOS via Capacitor
+
+### Pièges à éviter
+
+- **Mode édition du pseudo** : passe en pleine largeur (card seule) quand `editing === true` — ne pas essayer de l'afficher dans le bloc flex row de 50%, ça déborde
+- **`alignSelf: "center"` sur les boutons** des blocs côte à côte — ne pas remettre `"flex-start"` ou ça désaligne
+- **Zone dangereuse est à l'intérieur du `{showSecurity && <> ... </>}`** — ne pas la sortir de ce bloc, sinon elle redevient toujours visible
+- **`whiteSpace: "nowrap"` + `fontSize: 9` sur le bouton Déconnexion** — sans ça le mot est coupé dans le petit bloc
+
+---
+
 ## Session du 2026-06-26 — v5.30 → v5.34
 
 ### Ce qu'on a fait
