@@ -1965,14 +1965,22 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
   ];
 
   return (
-    <div style={{ height: "100dvh", display: "flex", flexDirection: "column", padding: "60px 24px 16px", maxWidth: 480, margin: "0 auto", overflow: "hidden", boxSizing: "border-box" }}>
+    <div className="menu-container" style={{ height: "100dvh", display: "flex", flexDirection: "column", padding: "60px 24px 16px", maxWidth: 480, margin: "0 auto", overflow: "hidden", boxSizing: "border-box" }}>
       <style>{`
         @keyframes fadeUp { from { opacity:0; transform: translateY(12px); } to { opacity:1; transform: translateY(0); } }
         .menu-item { animation: fadeUp .5s ease both; transition: transform .25s ease; }
         .menu-item:hover { transform: translateY(-2px); }
+        @media (min-width: 768px) {
+          .menu-container { height: auto !important; min-height: 100vh !important; overflow: visible !important; padding: 70px 24px 48px !important; }
+          .menu-logo    { margin-top: 20px !important; margin-bottom: 32px !important; }
+          .menu-mode    { margin-bottom: 20px !important; }
+          .menu-buttons { gap: 10px !important; }
+          .menu-item    { flex: none !important; padding: 18px 22px !important; }
+          .menu-version { margin-top: 24px !important; }
+        }
       `}</style>
 
-      <div style={{ textAlign: "center", marginBottom: 16 }}>
+      <div className="menu-logo" style={{ textAlign: "center", marginBottom: 16 }}>
         <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}><Logo size={28} color={C.ink} /></div>
         <h1 style={{ fontFamily: "'Manrope', sans-serif", fontWeight: 700, fontSize: 52, lineHeight: .95,
           letterSpacing: -3, margin: 0, color: C.ink }}>Fil</h1>
@@ -1985,7 +1993,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         )}
       </div>
 
-      <div style={{ marginBottom: 14 }}>
+      <div className="menu-mode" style={{ marginBottom: 14 }}>
         <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 600, marginBottom: 8, paddingLeft: 4 }}>Mode</div>
         <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
           {Object.entries(MODES).map(([key, m]) => {
@@ -2003,7 +2011,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         <div style={{ fontSize: 11, color: C.inkMute, marginTop: 6, paddingLeft: 4, fontWeight: 500 }}>{MODES[prefs.mode].sub}</div>
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1, minHeight: 0 }}>
+      <div className="menu-buttons" style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1, minHeight: 0 }}>
         {items.map((it, i) => (
           <button key={it.key} className="menu-item" onClick={it.action}
             style={{ ...(it.primary ? glassDark : glass), borderRadius: 18, padding: "0 22px",
@@ -2019,7 +2027,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.38</div>
+      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.38</div>
     </div>
   );
 }
