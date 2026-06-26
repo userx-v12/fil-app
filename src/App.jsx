@@ -1290,21 +1290,21 @@ function Rule({ num, text, C }) {
 // =========================================================================
 
 const VERSUS_RANKS = [
-  { name: "Figurant I",        min: 0,    nextMin: 317  },
-  { name: "Figurant II",       min: 317,  nextMin: 633  },
-  { name: "Figurant III",      min: 633,  nextMin: 950  },
-  { name: "Second Rôle I",    min: 950,  nextMin: 1017 },
-  { name: "Second Rôle II",   min: 1017, nextMin: 1083 },
-  { name: "Second Rôle III",  min: 1083, nextMin: 1150 },
-  { name: "Premier Rôle I",   min: 1150, nextMin: 1234 },
-  { name: "Premier Rôle II",  min: 1234, nextMin: 1317 },
-  { name: "Premier Rôle III", min: 1317, nextMin: 1400 },
-  { name: "Vedette I",         min: 1400, nextMin: 1500 },
-  { name: "Vedette II",        min: 1500, nextMin: 1600 },
-  { name: "Vedette III",       min: 1600, nextMin: 1700 },
-  { name: "Légende I",         min: 1700, nextMin: 2000 },
-  { name: "Légende II",        min: 2000, nextMin: 2300 },
-  { name: "Légende III",       min: 2300, nextMin: null  },
+  { name: "Figurant I",        min: 0,    nextMin: 67   },
+  { name: "Figurant II",       min: 67,   nextMin: 134  },
+  { name: "Figurant III",      min: 134,  nextMin: 200  },
+  { name: "Second Rôle I",    min: 200,  nextMin: 317  },
+  { name: "Second Rôle II",   min: 317,  nextMin: 434  },
+  { name: "Second Rôle III",  min: 434,  nextMin: 550  },
+  { name: "Premier Rôle I",   min: 550,  nextMin: 700  },
+  { name: "Premier Rôle II",  min: 700,  nextMin: 850  },
+  { name: "Premier Rôle III", min: 850,  nextMin: 1000 },
+  { name: "Vedette I",         min: 1000, nextMin: 1200 },
+  { name: "Vedette II",        min: 1200, nextMin: 1400 },
+  { name: "Vedette III",       min: 1400, nextMin: 1600 },
+  { name: "Légende I",         min: 1600, nextMin: 2000 },
+  { name: "Légende II",        min: 2000, nextMin: 2400 },
+  { name: "Légende III",       min: 2400, nextMin: null  },
 ];
 
 const SOLO_RANKS = [
@@ -2043,7 +2043,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.45</div>
+      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.46</div>
     </div>
   );
 }
