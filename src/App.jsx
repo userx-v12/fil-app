@@ -1406,8 +1406,8 @@ export default function App() {
 
   async function refreshProfile() {
     if (!authUser) return;
-    const data = await syncProfile(authUser);
-    setProfile(data);
+    const { data } = await supabase.from("profiles").select("*").eq("id", authUser.id).single();
+    setProfile(data || null);
   }
 
   const screenRef = useRef(screen);
@@ -2019,7 +2019,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.36</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.37</div>
     </div>
   );
 }
@@ -3563,8 +3563,7 @@ function VersusEndScreen({
           }
           const result = iWon ? 1 : iLost ? 0 : 0.5;
           const gain = computeVersusEloGain(myVersusElo ?? 0, oppElo, result);
-          const { data: cur } = await supabase.from("profiles").select("versus_elo").eq("id", authUserId).single();
-          const next = Math.max(0, (cur?.versus_elo ?? 0) + gain);
+          const next = Math.max(0, (myVersusElo ?? 0) + gain);
           await supabase.from("profiles").update({ versus_elo: next }).eq("id", authUserId);
           setEloGain(gain);
         } catch {}
