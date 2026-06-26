@@ -1361,6 +1361,7 @@ async function pushStatsToProfile(userId) {
     solo_easy:      loadSoloDiff("easy"),
     solo_medium:    loadSoloDiff("medium"),
     solo_hard:      loadSoloDiff("hard"),
+    solo_custom:    loadSoloCustom(),
     solo_optimal:   loadSoloOptimal(),
     solo_abandons:  loadSoloAbandons(),
     solo_hints:     loadSoloHints(),
@@ -2034,7 +2035,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.42</div>
+      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.43</div>
     </div>
   );
 }
@@ -5548,6 +5549,7 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
       solo_easy:       loadSoloDiff("easy"),
       solo_medium:     loadSoloDiff("medium"),
       solo_hard:       loadSoloDiff("hard"),
+      solo_custom:     loadSoloCustom(),
       solo_optimal:    loadSoloOptimal(),
       solo_abandons:   loadSoloAbandons(),
       solo_hints:      loadSoloHints(),
@@ -5570,7 +5572,7 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
   const soloEasy      = isLoggedIn ? (profile.solo_easy || 0)       : loadSoloDiff("easy");
   const soloMedium    = isLoggedIn ? (profile.solo_medium || 0)     : loadSoloDiff("medium");
   const soloHard      = isLoggedIn ? (profile.solo_hard || 0)       : loadSoloDiff("hard");
-  const soloCustom    = loadSoloCustom();
+  const soloCustom    = isLoggedIn ? (profile.solo_custom || 0) : loadSoloCustom();
   const soloOptimal   = isLoggedIn ? (profile.solo_optimal || 0)    : loadSoloOptimal();
   const soloAbandons  = isLoggedIn ? (profile.solo_abandons || 0)   : loadSoloAbandons();
   const soloHints     = isLoggedIn ? (profile.solo_hints || 0)      : loadSoloHints();
