@@ -1965,27 +1965,27 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
   ];
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", padding: "70px 24px 48px", maxWidth: 480, margin: "0 auto" }}>
+    <div style={{ height: "100dvh", display: "flex", flexDirection: "column", padding: "60px 24px 16px", maxWidth: 480, margin: "0 auto", overflow: "hidden", boxSizing: "border-box" }}>
       <style>{`
         @keyframes fadeUp { from { opacity:0; transform: translateY(12px); } to { opacity:1; transform: translateY(0); } }
         .menu-item { animation: fadeUp .5s ease both; transition: transform .25s ease; }
         .menu-item:hover { transform: translateY(-2px); }
       `}</style>
 
-      <div style={{ textAlign: "center", marginTop: 20, marginBottom: 32 }}>
-        <div style={{ display: "flex", justifyContent: "center", marginBottom: 20 }}><Logo size={32} color={C.ink} /></div>
-        <h1 style={{ fontFamily: "'Manrope', sans-serif", fontWeight: 700, fontSize: 56, lineHeight: .95,
+      <div style={{ textAlign: "center", marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}><Logo size={28} color={C.ink} /></div>
+        <h1 style={{ fontFamily: "'Manrope', sans-serif", fontWeight: 700, fontSize: 52, lineHeight: .95,
           letterSpacing: -3, margin: 0, color: C.ink }}>Fil</h1>
-        <div style={{ fontSize: 11, letterSpacing: 4, textTransform: "uppercase", color: C.inkSoft, marginTop: 14, fontWeight: 500 }}>Relie les films</div>
+        <div style={{ fontSize: 11, letterSpacing: 4, textTransform: "uppercase", color: C.inkSoft, marginTop: 10, fontWeight: 500 }}>Relie les films</div>
 
         {gamesPlayed > 0 && (
-          <div style={{ fontSize: 10, letterSpacing: 2, color: C.inkMute, marginTop: 10, fontWeight: 500 }}>
+          <div style={{ fontSize: 10, letterSpacing: 2, color: C.inkMute, marginTop: 6, fontWeight: 500 }}>
             {gamesPlayed} {gamesPlayed > 1 ? "parties jouées" : "partie jouée"}
           </div>
         )}
       </div>
 
-      <div style={{ marginBottom: 20 }}>
+      <div style={{ marginBottom: 14 }}>
         <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 600, marginBottom: 8, paddingLeft: 4 }}>Mode</div>
         <div style={{ display: "flex", gap: 6, ...glass, padding: 5, borderRadius: 999 }}>
           {Object.entries(MODES).map(([key, m]) => {
@@ -2003,13 +2003,13 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         <div style={{ fontSize: 11, color: C.inkMute, marginTop: 6, paddingLeft: 4, fontWeight: 500 }}>{MODES[prefs.mode].sub}</div>
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1, minHeight: 0 }}>
         {items.map((it, i) => (
           <button key={it.key} className="menu-item" onClick={it.action}
-            style={{ ...(it.primary ? glassDark : glass), borderRadius: 18, padding: "18px 22px",
+            style={{ ...(it.primary ? glassDark : glass), borderRadius: 18, padding: "0 22px",
               display: "flex", alignItems: "center", gap: 16, cursor: "pointer", fontFamily: "inherit",
               textAlign: "left", animationDelay: `${i * 0.05}s`,
-              color: it.primary ? C.bg : C.ink, border: "none" }}>
+              color: it.primary ? C.bg : C.ink, border: "none", flex: 1 }}>
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 600, fontSize: 19, letterSpacing: -0.5, lineHeight: 1, marginBottom: 4 }}>{it.label}</div>
               <div style={{ fontSize: 11, opacity: .65, letterSpacing: .3, fontWeight: 400 }}>{it.sub}</div>
@@ -2019,7 +2019,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.38</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.38</div>
     </div>
   );
 }
