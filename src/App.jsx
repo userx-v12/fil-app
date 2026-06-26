@@ -2041,7 +2041,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.49</div>
+      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.50</div>
     </div>
   );
 }
@@ -2387,6 +2387,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
   const [hintAvailable, setHintAvailable] = useState(false);
   const [finished, setFinished] = useState(false);
   const [abandoned, setAbandoned] = useState(false);
+  const [soloScoreDelta, setSoloScoreDelta] = useState(null);
   const [confirmingAbandon, setConfirmingAbandon] = useState(false);
   const [filmoSort, setFilmoSort] = useState("popularity");
   const [castSort, setCastSort] = useState("popularity");
@@ -2571,6 +2572,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
         addSoloHints(hintsUsed);
         if (authUserId && challenge.difficultyUsed && challenge.difficultyUsed !== "custom") {
           const delta = computeSoloScoreDelta(challenge.difficultyUsed, isOptimal, false);
+          setSoloScoreDelta(delta);
           updateSoloScore(authUserId, delta).catch(() => {});
         }
         pushStatsToProfile(authUserId).then(() => onStatsSync?.()).catch(() => {});
@@ -2709,6 +2711,7 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
       addSoloHints(hintsUsed);
       if (authUserId && challenge.difficultyUsed && challenge.difficultyUsed !== "custom") {
         const delta = computeSoloScoreDelta(challenge.difficultyUsed, false, true);
+        setSoloScoreDelta(delta);
         updateSoloScore(authUserId, delta).catch(() => {});
       }
       pushStatsToProfile(authUserId).then(() => onStatsSync?.()).catch(() => {});
@@ -2759,7 +2762,8 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
           onReplay={onReplay} onRetry={onRetry} onMenu={onExit}
           themeColors={C} glass={glass} glassDark={glassDark}
           startWork={challenge.start} endWork={challenge.end}
-          modeUsed={challenge.modeUsed} difficultyUsed={challenge.difficultyUsed} />
+          modeUsed={challenge.modeUsed} difficultyUsed={challenge.difficultyUsed}
+          soloScoreDelta={soloScoreDelta} />
       </GameShell>
     );
   }
@@ -3253,7 +3257,7 @@ function MoviePicker({ title, movies, targetWork, onPick, onClose, greenWork, ye
 // END SCREEN
 // =========================================================================
 
-function EndScreen({ path, optimal, elapsed, clicks, formatTime, playerSteps, abandoned, hintsUsed, onReplay, onRetry, onMenu, themeColors, glass, glassDark, startWork, endWork, modeUsed, difficultyUsed }) {
+function EndScreen({ path, optimal, elapsed, clicks, formatTime, playerSteps, abandoned, hintsUsed, onReplay, onRetry, onMenu, themeColors, glass, glassDark, startWork, endWork, modeUsed, difficultyUsed, soloScoreDelta }) {
   const C = themeColors;
   const optimalSteps = optimal && optimal.length > 0 ? Math.max(0, Math.floor((optimal.length - 1) / 2)) : null;
   const isOptimal = !abandoned && optimalSteps !== null && playerSteps <= optimalSteps;
@@ -3352,6 +3356,13 @@ function EndScreen({ path, optimal, elapsed, clicks, formatTime, playerSteps, ab
         <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkMute, marginBottom: 12, fontWeight: 600 }}>Résultat</div>
         <div style={{ fontWeight: 800, fontSize: 36, lineHeight: 1.05, color: verdictColor, marginBottom: 8, letterSpacing: -1.4,
                       animation: isOptimal ? "verdictPop .55s cubic-bezier(.34,1.56,.64,1) both" : "none" }}>{verdict}</div>
+
+        {soloScoreDelta !== null && (
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, letterSpacing: 0.2,
+            color: soloScoreDelta >= 0 ? C.green : C.amber }}>
+            {soloScoreDelta >= 0 ? "+" : ""}{soloScoreDelta} pts
+          </div>
+        )}
 
         {(modeLabel || difficultyLabel) && (
           <div style={{ fontSize: 11, letterSpacing: 2, textTransform: "uppercase", color: C.inkSoft, marginBottom: 18, fontWeight: 600 }}>
