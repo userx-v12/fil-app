@@ -5877,12 +5877,9 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
                 </div>
                 {pwdMsg && <div style={{ fontSize: 11, marginTop: 6, color: pwdMsg.ok ? C.green : RED }}>{pwdMsg.text}</div>}
               </form>
-              </>}
-            </div>
-
-            {/* Suppression de compte */}
-            <div style={{ ...glass, borderRadius: 22, padding: 20, marginBottom: 16, border: `1px solid ${RED}30` }}>
-              <div style={{ ...sectionLabel, color: RED }}>Zone dangereuse</div>
+              <div style={{ height: 1, background: `${RED}30`, margin: "16px 0" }} />
+              {/* Zone dangereuse */}
+              <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: RED, fontWeight: 600, marginBottom: 10 }}>Zone dangereuse</div>
               <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 12, lineHeight: 1.5 }}>
                 Supprimer définitivement ton compte et toutes tes données. Cette action est irréversible.
               </div>
@@ -5899,6 +5896,7 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
                   opacity: deleting ? 0.6 : 1 }}>
                 {deleting ? "…" : "Supprimer mon compte"}
               </button>
+              </>}
             </div>
           </>
         );
