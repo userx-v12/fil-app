@@ -135,6 +135,7 @@ const LS_SOLO_MEDIUM    = "fil-solo-medium";
 const LS_SOLO_HARD      = "fil-solo-hard";
 const LS_SOLO_OPTIMAL   = "fil-solo-optimal";
 const LS_VERSUS_OPTIMAL = "fil-versus-optimal";
+const LS_SOLO_CUSTOM    = "fil-solo-custom";
 const LS_SOLO_ABANDONS  = "fil-solo-abandons";
 const LS_SOLO_HINTS     = "fil-solo-hints";
 const LS_VERSUS_HINTS   = "fil-versus-hints";
@@ -174,6 +175,8 @@ function loadSoloOptimal()    { try { return parseInt(localStorage.getItem(LS_SO
 function loadVersusOptimal()  { try { return parseInt(localStorage.getItem(LS_VERSUS_OPTIMAL) || "0", 10); } catch { return 0; } }
 function incSoloOptimal()     { try { localStorage.setItem(LS_SOLO_OPTIMAL,   String(loadSoloOptimal()   + 1)); } catch {} }
 function incVersusOptimal()   { try { localStorage.setItem(LS_VERSUS_OPTIMAL, String(loadVersusOptimal() + 1)); } catch {} }
+function loadSoloCustom()     { try { return parseInt(localStorage.getItem(LS_SOLO_CUSTOM)   || "0", 10); } catch { return 0; } }
+function incSoloCustom()      { try { localStorage.setItem(LS_SOLO_CUSTOM,   String(loadSoloCustom()   + 1)); } catch {} }
 function loadSoloAbandons()   { try { return parseInt(localStorage.getItem(LS_SOLO_ABANDONS) || "0", 10); } catch { return 0; } }
 function incSoloAbandons()    { try { localStorage.setItem(LS_SOLO_ABANDONS, String(loadSoloAbandons() + 1)); } catch {} }
 function loadSoloHints()      { try { return parseInt(localStorage.getItem(LS_SOLO_HINTS)    || "0", 10); } catch { return 0; } }
@@ -1354,7 +1357,7 @@ async function updateSoloScore(userId, delta) {
 async function pushStatsToProfile(userId) {
   if (!userId) return;
   await supabase.from("profiles").update({
-    solo_games:     loadSoloDiff("easy") + loadSoloDiff("medium") + loadSoloDiff("hard") + loadSoloAbandons(),
+    solo_games:     loadSoloDiff("easy") + loadSoloDiff("medium") + loadSoloDiff("hard") + loadSoloCustom() + loadSoloAbandons(),
     solo_easy:      loadSoloDiff("easy"),
     solo_medium:    loadSoloDiff("medium"),
     solo_hard:      loadSoloDiff("hard"),
@@ -2031,7 +2034,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.40</div>
+      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.41</div>
     </div>
   );
 }
@@ -2549,7 +2552,9 @@ function Game({ challenge, onExit, onReplay, onRetry, onFinished, onRefreshPart,
       } else {
         const finalSteps = Math.max(0, Math.floor((path.length - 1) / 2));
         saveBestSteps(finalSteps);
-        if (challenge.difficultyUsed && challenge.difficultyUsed !== "custom") {
+        if (challenge.difficultyUsed === "custom") {
+          incSoloCustom();
+        } else if (challenge.difficultyUsed) {
           incSoloDiff(challenge.difficultyUsed);
         }
         const optSteps = challenge.optimal?.length > 0
@@ -5539,7 +5544,7 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
   async function handleMigrate() {
     setMigrating(true);
     await supabase.from("profiles").update({
-      solo_games:      loadSoloDiff("easy") + loadSoloDiff("medium") + loadSoloDiff("hard") + loadSoloAbandons(),
+      solo_games:      loadSoloDiff("easy") + loadSoloDiff("medium") + loadSoloDiff("hard") + loadSoloCustom() + loadSoloAbandons(),
       solo_easy:       loadSoloDiff("easy"),
       solo_medium:     loadSoloDiff("medium"),
       solo_hard:       loadSoloDiff("hard"),
