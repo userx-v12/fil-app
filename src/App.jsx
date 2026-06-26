@@ -2013,7 +2013,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.32</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.33</div>
     </div>
   );
 }
@@ -5192,6 +5192,8 @@ function AuthScreen({ onBack, onSuccess, themeColors, glass, glassDark }) {
   const [mode, setMode] = useState("login"); // "login" | "register"
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [done, setDone] = useState(false); // confirmation d'inscription
@@ -5199,6 +5201,10 @@ function AuthScreen({ onBack, onSuccess, themeColors, glass, glassDark }) {
   async function handleSubmit(e) {
     e.preventDefault();
     setError(null);
+    if (mode === "register" && password !== confirmPassword) {
+      setError("Les mots de passe ne correspondent pas.");
+      return;
+    }
     setLoading(true);
     if (mode === "register") {
       const { data, error: err } = await supabase.auth.signUp({ email: email.trim(), password });
@@ -5228,6 +5234,17 @@ function AuthScreen({ onBack, onSuccess, themeColors, glass, glassDark }) {
     fontWeight: 800, cursor: loading ? "default" : "pointer", color: C.glassDarkInk,
     opacity: loading ? 0.6 : 1,
   };
+  const EyeIcon = ({ visible }) => visible ? (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={C.inkMute} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+    </svg>
+  ) : (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={C.inkMute} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
+      <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+      <line x1="1" y1="1" x2="23" y2="23"/>
+    </svg>
+  );
 
   if (done) {
     return (
@@ -5263,7 +5280,7 @@ function AuthScreen({ onBack, onSuccess, themeColors, glass, glassDark }) {
         {/* Toggle login / register */}
         <div style={{ display: "flex", gap: 4, background: C.bg, borderRadius: 12, padding: 4, marginBottom: 24 }}>
           {["login", "register"].map(m => (
-            <button key={m} onClick={() => { setMode(m); setError(null); }}
+            <button key={m} onClick={() => { setMode(m); setError(null); setConfirmPassword(""); setShowPassword(false); }}
               style={{ flex: 1, borderRadius: 9, padding: "9px 0", border: "none", fontFamily: "inherit",
                 fontSize: 11, letterSpacing: 1.5, textTransform: "uppercase", fontWeight: 700, cursor: "pointer",
                 background: mode === m ? C.ink : "transparent", color: mode === m ? C.bg : C.inkSoft,
@@ -5276,8 +5293,31 @@ function AuthScreen({ onBack, onSuccess, themeColors, glass, glassDark }) {
         <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <input type="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)}
             required autoComplete="email" style={inputStyle} />
-          <input type="password" placeholder="Mot de passe" value={password} onChange={e => setPassword(e.target.value)}
-            required minLength={6} autoComplete={mode === "login" ? "current-password" : "new-password"} style={inputStyle} />
+          <div style={{ position: "relative" }}>
+            <input type={showPassword ? "text" : "password"} placeholder="Mot de passe" value={password}
+              onChange={e => setPassword(e.target.value)}
+              required minLength={6} autoComplete={mode === "login" ? "current-password" : "new-password"}
+              style={{ ...inputStyle, paddingRight: 46 }} />
+            <button type="button" onClick={() => setShowPassword(v => !v)}
+              style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)",
+                background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex" }}>
+              <EyeIcon visible={showPassword} />
+            </button>
+          </div>
+          {mode === "register" && (
+            <div style={{ position: "relative" }}>
+              <input type={showPassword ? "text" : "password"} placeholder="Confirmer le mot de passe"
+                value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)}
+                required minLength={6} autoComplete="new-password"
+                style={{ ...inputStyle, paddingRight: 46,
+                  borderColor: confirmPassword && confirmPassword !== password ? RED : C.hairline }} />
+              <button type="button" onClick={() => setShowPassword(v => !v)}
+                style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)",
+                  background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex" }}>
+                <EyeIcon visible={showPassword} />
+              </button>
+            </div>
+          )}
           {error && (
             <div style={{ fontSize: 12, color: RED, background: `${RED}18`, borderRadius: 8, padding: "9px 13px" }}>
               {error}
