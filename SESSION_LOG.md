@@ -28,6 +28,110 @@ Lis CLAUDE.md et SESSION_LOG.md. Dis-moi en 3 lignes où on en est et ce qu'on a
 
 ---
 
+## Session du 2026-06-26 — v5.38 → v5.50
+
+### Ce qu'on a fait
+
+**v5.38-v5.40 — Menu responsive no-scroll mobile**
+- Menu principal : `height: 100dvh` + `overflow: hidden` sur le container + `document.body.style.overflow = 'hidden'` via useEffect (mobile < 768px uniquement, desktop restauré via media query)
+- VersusScreen : même traitement (body lock mobile)
+- CustomScreen : pas de body lock (résultats de recherche dynamiques → scroll nécessaire)
+- Fix inputs Versus qui débordaient sur mobile : `boxSizing: 'border-box'` sur les 3 inputs
+
+**v5.41 — Fix Sur Mesure solo non comptée dans solo_games**
+- Cause : `if (challenge.difficultyUsed !== "custom")` bloquait `incSoloDiff` pour les parties Sur Mesure
+- Fix : nouvelle clé localStorage `fil-solo-custom` + `loadSoloCustom`/`incSoloCustom`, appelé à la victoire Sur Mesure
+- `solo_games` inclut maintenant `loadSoloCustom()` dans les deux endroits (pushStatsToProfile + handleMigrate)
+- Sur Mesure = entraînement, aucun impact Elo
+
+**v5.42-v5.43 — Catégorie Sur Mesure dans AccountScreen + sync DB**
+- Ligne "Sur Mesure" ajoutée sous Facile/Moyen/Difficile dans les stats
+- Colonne `solo_custom INTEGER DEFAULT 0` ajoutée dans `profiles` (SQL exécuté par Mathieu)
+- `pushStatsToProfile` et `handleMigrate` poussent maintenant `solo_custom`
+- `soloCustom` lu depuis `profile.solo_custom` si connecté, localStorage sinon
+
+**v5.44 — syncProfile robuste (logging + retry)**
+- Avant : l'erreur de l'upsert était silencieuse, le profil pouvait rester null sans qu'on le sache
+- Fix : `{ error }` lu et loggé en console
+- Si le SELECT retourne null (upsert raté), retry sans `ignoreDuplicates` + re-SELECT
+- Trigger SQL `handle_new_user` ajouté pour créer la ligne profiles côté serveur à chaque inscription (SECURITY DEFINER)
+
+**v5.45 — Elo cohérent : Solo et Versus démarrent à 0**
+- `SOLO_RANKS` remappé en 0-based (tous les min/nextMin -= 800)
+- `soloDisplayScore = (profile.solo_score ?? 800) - 800` dans AccountScreen et rank popup
+- Fix bug ligne 1847 : affichait "800 pts" au lieu de "0" dans le rank popup
+- SQL : `ALTER TABLE profiles ALTER COLUMN versus_elo SET DEFAULT 0; UPDATE profiles SET versus_elo = 0 WHERE versus_wins = 0 AND versus_losses = 0`
+
+**v5.46 — VERSUS_RANKS alignés sur SOLO_RANKS**
+- Ancienne structure : inversée (317 pts par sous-palier Figurant, 67 pts Second Rôle) → corrigée
+- Nouveaux seuils identiques aux deux : 0→67→134→200→317→434→550→700→850→1000→1200→1400→1600→2000→2400
+
+**v5.47 — Fix pseudo à l'inscription**
+- Cause : le pseudo saisi n'était jamais transmis en DB car l'upsert était dans `if (data?.session)` (null quand confirmation email activée)
+- Fix code : username passé via `options: { data: { username } }` dans `supabase.auth.signUp`
+- Fix SQL : trigger `handle_new_user` mis à jour pour lire `NEW.raw_user_meta_data->>'username'` (SECURITY DEFINER bypass RLS)
+- Pseudo rendu obligatoire à l'inscription (validation avant signUp)
+- Fallback `displayName` : `authUser.email.split('@')[0]` au lieu de l'email complet
+
+**v5.48 — Uniformisation solo_score (offset +800 retiré)**
+- Avant : valeur stockée = score réel + 800 (offset historique), affiché avec `- 800`
+- Fix SQL : `UPDATE profiles SET solo_score = solo_score - 800; ALTER COLUMN solo_score SET DEFAULT 0`
+- Fix code : toutes les références `?? 800` → `?? 0`, `-800` retiré partout, `Math.max(800,...)` → `Math.max(0,...)`
+- 4 lignes touchées : 1352, 1829, 1847, 5617
+
+**v5.49 — updateSoloScore atomique via RPC**
+- Ancienne version : SELECT + calcul JS + UPDATE → race condition possible
+- RPC SQL : `CREATE FUNCTION increment_solo_score(user_id uuid, delta integer)` → `UPDATE ... SET solo_score = GREATEST(0, COALESCE(solo_score, 0) + delta)`
+- Code : 3 lignes → 1 appel `supabase.rpc("increment_solo_score", { user_id, delta })`
+
+**v5.50 — Affichage gain/perte pts en fin de partie Solo**
+- State `soloScoreDelta` ajouté dans Game, rempli à la victoire ET à l'abandon
+- Passé en prop à `EndScreen`, affiché sous le verdict : "+15 pts" (vert) / "-5 pts" (amber)
+- Masqué si Sur Mesure (`difficultyUsed === "custom"`) ou non connecté
+- Versus : gain Elo déjà affiché (inchangé)
+
+**Divers**
+- Compte orphelin `gthrroche@gmail.com` réparé (INSERT INTO profiles via email lookup)
+- Vue SQL `profiles_with_email` créée (JOIN profiles + auth.users, GRANT service_role)
+- Détection orphelins SQL : `SELECT u.id, u.email FROM auth.users u LEFT JOIN profiles p ON p.id = u.id WHERE p.id IS NULL`
+
+### Bugs corrigés
+
+| Version | Bug | Cause | Fix |
+|---------|-----|-------|-----|
+| v5.41 | Sur Mesure non comptée dans solo_games | Condition `!== "custom"` bloquait incSoloDiff | incSoloCustom() séparé |
+| v5.44 | Profil orphelin (gthrroche) | upsert syncProfile silencieux si RLS bloque | logging + retry + trigger SQL |
+| v5.45 | Rank popup affichait "800 pts" pour nouveau compte | solo_score ?? 800 affiché brut, pas -800 | soloDisplayScore partout |
+| v5.47 | Pseudo inscription jamais sauvegardé | upsert dans `if (data?.session)` null si email confirmation | options.data + trigger |
+| v5.48 | "-783 pts" après migration SQL | double soustraction -800 (SQL + code) | tous les `?? 800` → `?? 0` |
+
+### État actuel du code
+
+- **Version affichée : v5.50**
+- Derniers commits pushés sur `main` (e641669 → 8dd5b1e)
+- Fichier modifié : `src/App.jsx` uniquement
+- SQL exécutés dans Supabase : colonne `solo_custom`, vue `profiles_with_email`, trigger `handle_new_user` (v2), default `versus_elo = 0`, migration `solo_score - 800`, default `solo_score = 0`, RPC `increment_solo_score`
+
+### Ce qui reste à faire
+
+- ⏸ `character_name` dans `credits` — en attente réimport TMDb (944k lignes)
+- ⏸ `original_title` dans `works` — en attente réimport TMDb
+- Phase 6 : App iOS via Capacitor
+
+### Pièges à éviter
+
+- **NE JAMAIS remettre `- 800` sur `solo_score`** — la migration SQL a soustrait 800 de toutes les valeurs en DB. Le score stocké EST le vrai score (départ à 0). SOLO_RANKS commence à `min: 0`.
+- **NE JAMAIS remettre `?? 800` ou `Math.max(800, ...)`** dans le code solo score — le plancher est maintenant 0.
+- **`body overflow hidden` sur mobile** : appliqué dans Menu ET VersusScreen, PAS dans CustomScreen (la recherche de film agrandit la page, lock interdit).
+- **Le trigger `handle_new_user`** lit `NEW.raw_user_meta_data->>'username'` — ne pas revenir à l'ancienne version sans lecture metadata, sinon le pseudo ne serait plus créé.
+- **`syncProfile` a un retry** si le SELECT retourne null (upsert raté silencieux) — ne pas supprimer ce bloc retry.
+- **`updateSoloScore` est une RPC** — plus de SELECT côté client. Ne pas revenir au pattern SELECT+UPDATE.
+- **`soloScoreDelta`** est null pour les parties Sur Mesure et quand non connecté — le `{soloScoreDelta !== null && ...}` dans EndScreen est volontaire.
+- **VERSUS_RANKS et SOLO_RANKS sont maintenant identiques** (mêmes seuils 0→67→200...) — ne pas revenir aux anciennes valeurs Versus (0/317/633/950...).
+- **Pseudo obligatoire à l'inscription** depuis v5.47 — ne pas retirer la validation `!username.trim()` dans handleSubmit.
+
+---
+
 ## Session du 2026-06-26 — v5.36 → v5.37
 
 ### Ce qu'on a fait
