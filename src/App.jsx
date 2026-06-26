@@ -2016,7 +2016,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.34</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.35</div>
     </div>
   );
 }
@@ -5495,6 +5495,7 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
   const [migrating, setMigrating] = useState(false);
 
   // Sécurité
+  const [showSecurity, setShowSecurity] = useState(false);
   const [newEmail, setNewEmail] = useState("");
   const [emailMsg, setEmailMsg] = useState(null);
   const [newPwd, setNewPwd] = useState("");
@@ -5640,41 +5641,10 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
         </div>
       )}
 
-      {/* Compte connecté / déconnecté */}
-      <div style={{ ...glass, borderRadius: 22, padding: 20, marginBottom: 16 }}>
-        {isLoggedIn ? (
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div>
-              <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, marginBottom: 6, fontWeight: 600 }}>Compte</div>
-              <div style={{ fontSize: 13, color: C.inkSoft }}>{authUser.email}</div>
-            </div>
-            <button onClick={onLogout}
-              style={{ background: "transparent", border: `1px solid ${C.hairline}`, borderRadius: 999,
-                padding: "7px 14px", fontFamily: "inherit", fontSize: 10, letterSpacing: 1.2,
-                textTransform: "uppercase", fontWeight: 700, color: C.inkSoft, cursor: "pointer" }}>
-              Déconnexion
-            </button>
-          </div>
-        ) : (
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div>
-              <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, marginBottom: 6, fontWeight: 600 }}>Compte</div>
-              <div style={{ fontSize: 13, color: C.inkMute }}>Non connecté</div>
-            </div>
-            <button onClick={onOpenAuth}
-              style={{ ...glassDark, borderRadius: 999, padding: "9px 16px", border: "none",
-                fontFamily: "inherit", fontSize: 10, letterSpacing: 1.2,
-                textTransform: "uppercase", fontWeight: 700, cursor: "pointer", color: C.glassDarkInk }}>
-              Se connecter
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Pseudo */}
-      <div style={{ ...glass, borderRadius: 22, padding: 20, marginBottom: 16 }}>
-        <div style={sectionLabel}>Pseudo Versus</div>
-        {editing ? (
+      {/* Pseudo + Compte côte à côte */}
+      {editing ? (
+        <div style={{ ...glass, borderRadius: 22, padding: 20, marginBottom: 16 }}>
+          <div style={sectionLabel}>Pseudo Versus</div>
           <div style={{ display: "flex", gap: 8 }}>
             <input ref={inputRef} value={nameInput} onChange={e => setNameInput(e.target.value)}
               onKeyDown={handleKeyDown} maxLength={20}
@@ -5688,20 +5658,49 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
               Enregistrer
             </button>
           </div>
-        ) : (
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div style={{ fontSize: 20, fontWeight: 800, color: C.ink, letterSpacing: -0.5 }}>
-              {displayName || <span style={{ color: C.inkMute, fontWeight: 500, fontSize: 14 }}>Pas encore défini</span>}
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+          {/* Pseudo */}
+          <div style={{ ...glass, borderRadius: 22, padding: 16, flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between", minHeight: 100 }}>
+            <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 600, marginBottom: 8 }}>Pseudo</div>
+            <div style={{ fontSize: 17, fontWeight: 800, color: C.ink, letterSpacing: -0.5, flex: 1, wordBreak: "break-word" }}>
+              {displayName || <span style={{ color: C.inkMute, fontWeight: 500, fontSize: 13 }}>Non défini</span>}
             </div>
             <button onClick={startEdit}
               style={{ background: "transparent", border: `1px solid ${C.hairline}`, borderRadius: 999,
-                padding: "7px 14px", fontFamily: "inherit", fontSize: 10, letterSpacing: 1.2,
-                textTransform: "uppercase", fontWeight: 700, color: C.inkSoft, cursor: "pointer" }}>
+                padding: "6px 12px", fontFamily: "inherit", fontSize: 10, letterSpacing: 1.2,
+                textTransform: "uppercase", fontWeight: 700, color: C.inkSoft, cursor: "pointer",
+                marginTop: 12, alignSelf: "flex-start" }}>
               Modifier
             </button>
           </div>
-        )}
-      </div>
+          {/* Compte */}
+          <div style={{ ...glass, borderRadius: 22, padding: 16, flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between", minHeight: 100 }}>
+            <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 600, marginBottom: 8 }}>Compte</div>
+            <div style={{ fontSize: 12, color: C.inkSoft, flex: 1, wordBreak: "break-all" }}>
+              {isLoggedIn ? authUser.email : <span style={{ color: C.inkMute }}>Non connecté</span>}
+            </div>
+            {isLoggedIn ? (
+              <button onClick={onLogout}
+                style={{ background: "transparent", border: `1px solid ${C.hairline}`, borderRadius: 999,
+                  padding: "6px 12px", fontFamily: "inherit", fontSize: 10, letterSpacing: 1.2,
+                  textTransform: "uppercase", fontWeight: 700, color: C.inkSoft, cursor: "pointer",
+                  marginTop: 12, alignSelf: "flex-start" }}>
+                Déco
+              </button>
+            ) : (
+              <button onClick={onOpenAuth}
+                style={{ ...glassDark, borderRadius: 999, padding: "6px 12px", border: "none",
+                  fontFamily: "inherit", fontSize: 10, letterSpacing: 1.2,
+                  textTransform: "uppercase", fontWeight: 700, cursor: "pointer",
+                  color: C.glassDarkInk, marginTop: 12, alignSelf: "flex-start" }}>
+                Connexion
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Stats Solo */}
       <div style={{ ...glass, borderRadius: 22, padding: 20, marginBottom: 16 }}>
@@ -5816,7 +5815,16 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
           <>
             {/* Sécurité */}
             <div style={{ ...glass, borderRadius: 22, padding: 20, marginBottom: 16 }}>
-              <div style={sectionLabel}>Sécurité</div>
+              <button onClick={() => setShowSecurity(v => !v)}
+                style={{ background: "none", border: "none", width: "100%", cursor: "pointer", padding: 0,
+                  display: "flex", alignItems: "center", justifyContent: "space-between", fontFamily: "inherit" }}>
+                <div style={sectionLabel}>Sécurité</div>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={C.inkMute} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                  style={{ transform: showSecurity ? "rotate(180deg)" : "rotate(0deg)", transition: "transform .2s", flexShrink: 0, marginBottom: 14 }}>
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+              </button>
+              {showSecurity && <>
               {/* Changer l'email */}
               <form onSubmit={handleChangeEmail} style={{ marginBottom: 16 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: C.inkSoft, letterSpacing: 0.5, marginBottom: 8 }}>Changer l'email</div>
@@ -5869,6 +5877,7 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
                 </div>
                 {pwdMsg && <div style={{ fontSize: 11, marginTop: 6, color: pwdMsg.ok ? C.green : RED }}>{pwdMsg.text}</div>}
               </form>
+              </>}
             </div>
 
             {/* Suppression de compte */}
