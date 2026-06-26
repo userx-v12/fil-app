@@ -1957,6 +1957,10 @@ function Fonts() {
 
 function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDark, gamesPlayed }) {
   const C = themeColors;
+  useEffect(() => {
+    if (window.innerWidth < 768) document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = ''; };
+  }, []);
   const items = [
     { key: "play", label: "Jouer", sub: "Défi aléatoire", action: onPlay, primary: true },
     { key: "custom", label: "Sur Mesure", sub: "Choisis ton défi", action: () => onNavigate("custom") },
@@ -2027,7 +2031,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.38</div>
+      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.39</div>
     </div>
   );
 }
@@ -3969,6 +3973,11 @@ function CustomScreen({ onBack, onStart, themeColors, glass, glassDark }) {
   const [pickingFor, setPickingFor] = useState("start");
 
   useEffect(() => {
+    if (window.innerWidth < 768) document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = ''; };
+  }, []);
+
+  useEffect(() => {
     if (!search || search.trim().length < 2) { setResults([]); return; }
     const handle = setTimeout(async () => {
       setSearching(true);
@@ -4093,6 +4102,10 @@ function Slot({ label, movie, active, onClick, onClear, themeColors, glass }) {
 
 function VersusScreen({ onBack, onCreate, onJoinManual, themeColors, glass, glassDark }) {
   const C = themeColors;
+  useEffect(() => {
+    if (window.innerWidth < 768) document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = ''; };
+  }, []);
   const btnPrimary = {
     ...glassDark, borderRadius: 18, padding: "20px 22px",
     display: "flex", alignItems: "center", gap: 16, cursor: "pointer", fontFamily: "inherit",
