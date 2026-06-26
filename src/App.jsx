@@ -2031,7 +2031,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.39</div>
+      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.40</div>
     </div>
   );
 }
@@ -3971,11 +3971,6 @@ function CustomScreen({ onBack, onStart, themeColors, glass, glassDark }) {
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [pickingFor, setPickingFor] = useState("start");
-
-  useEffect(() => {
-    if (window.innerWidth < 768) document.body.style.overflow = 'hidden';
-    return () => { document.body.style.overflow = ''; };
-  }, []);
 
   useEffect(() => {
     if (!search || search.trim().length < 2) { setResults([]); return; }
