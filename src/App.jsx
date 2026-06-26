@@ -5671,7 +5671,7 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
               style={{ background: "transparent", border: `1px solid ${C.hairline}`, borderRadius: 999,
                 padding: "6px 12px", fontFamily: "inherit", fontSize: 10, letterSpacing: 1.2,
                 textTransform: "uppercase", fontWeight: 700, color: C.inkSoft, cursor: "pointer",
-                marginTop: 12, alignSelf: "flex-start" }}>
+                marginTop: 12, alignSelf: "center" }}>
               Modifier
             </button>
           </div>
@@ -5686,7 +5686,7 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
                 style={{ background: "transparent", border: `1px solid ${C.hairline}`, borderRadius: 999,
                   padding: "6px 12px", fontFamily: "inherit", fontSize: 10, letterSpacing: 1.2,
                   textTransform: "uppercase", fontWeight: 700, color: C.inkSoft, cursor: "pointer",
-                  marginTop: 12, alignSelf: "flex-start" }}>
+                  marginTop: 12, alignSelf: "center" }}>
                 Déco
               </button>
             ) : (
@@ -5694,7 +5694,7 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
                 style={{ ...glassDark, borderRadius: 999, padding: "6px 12px", border: "none",
                   fontFamily: "inherit", fontSize: 10, letterSpacing: 1.2,
                   textTransform: "uppercase", fontWeight: 700, cursor: "pointer",
-                  color: C.glassDarkInk, marginTop: 12, alignSelf: "flex-start" }}>
+                  color: C.glassDarkInk, marginTop: 12, alignSelf: "center" }}>
                 Connexion
               </button>
             )}
