@@ -1406,6 +1406,9 @@ export default function App() {
     setProfile(data);
   }
 
+  const screenRef = useRef(screen);
+  useEffect(() => { screenRef.current = screen; }, [screen]);
+
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       const u = session?.user ?? null;
@@ -1413,7 +1416,9 @@ export default function App() {
       if (u) syncProfile(u).then(p => {
         setProfile(p);
         if (p?.filter_preset) setPrefs({ ...DEFAULT_PREFS, ...p.filter_preset });
-        if (_event === "SIGNED_IN") setScreen("account");
+        // Naviguer vers "compte" uniquement si on venait de l'écran auth (login explicite)
+        // SIGNED_IN se déclenche aussi au refresh de token → ne pas rediriger dans ce cas
+        if (_event === "SIGNED_IN" && screenRef.current === "auth") setScreen("account");
       });
       else setProfile(null);
     });
@@ -1697,7 +1702,7 @@ export default function App() {
       const match = await createMatch({
         startWork: placeholder, endWork: placeholder,
         optimalSteps: 0, difficulty: "easy",
-        victoryCondition: "hybrid", customMode: true,
+        victoryCondition: "time", customMode: true,
       });
       const name = getStoredPlayerName() || "Joueur";
       await joinMatch(match.id, name, 1, authUser?.id ?? null);
@@ -2008,7 +2013,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.31</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.32</div>
     </div>
   );
 }
