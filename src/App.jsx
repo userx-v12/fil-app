@@ -1068,16 +1068,6 @@ function Logo({ size = 28, color }) {
     </svg>
   );
 }
-function LogoMark({ size = 24, color }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 32 32" style={{ display: "block" }}>
-      <circle cx="6" cy="16" r="3" fill={color}/>
-      <path d="M 9 16 Q 16 6, 23 16" stroke={color} strokeWidth="1.6" fill="none" strokeLinecap="round"/>
-      <circle cx="26" cy="16" r="3" fill={color}/>
-    </svg>
-  );
-}
-
 function Spinner({ label, themeColors }) {
   const C = themeColors;
   return (
@@ -1141,6 +1131,20 @@ function AccountIcon({ color }) {
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
       <circle cx="12" cy="7" r="4"/>
+    </svg>
+  );
+}
+
+function EyeIcon({ visible, color, size = 18 }) {
+  return visible ? (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+    </svg>
+  ) : (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
+      <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+      <line x1="1" y1="1" x2="23" y2="23"/>
     </svg>
   );
 }
@@ -1921,7 +1925,6 @@ export default function App() {
                                   onProfileRefresh={refreshProfile}
                                   onLogout={async () => { await supabase.auth.signOut(); setScreen("menu"); }} />}
       {screen === "auth" && <AuthScreen onBack={() => setScreen("account")}
-                                  onSuccess={() => setScreen("account")}
                                   themeColors={C} glass={glass} glassDark={glassDark} />}
       {screen === "password-reset" && <PasswordResetScreen onDone={() => setScreen("account")}
                                   themeColors={C} glass={glass} glassDark={glassDark} />}
@@ -2016,7 +2019,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.35</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.36</div>
     </div>
   );
 }
@@ -5215,17 +5218,6 @@ function PasswordResetScreen({ onDone, themeColors, glass, glassDark }) {
     width: "100%", boxSizing: "border-box", background: "transparent", border: `1px solid ${C.hairline}`,
     borderRadius: 12, padding: "13px 16px", fontFamily: "inherit", fontSize: 15, color: C.ink, outline: "none",
   };
-  const EyeIcon = ({ visible }) => visible ? (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={C.inkMute} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
-    </svg>
-  ) : (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={C.inkMute} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
-      <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
-      <line x1="1" y1="1" x2="23" y2="23"/>
-    </svg>
-  );
 
   return (
     <div style={{ minHeight: "100vh", padding: "70px 20px 40px", maxWidth: 420, margin: "0 auto" }}>
@@ -5246,7 +5238,7 @@ function PasswordResetScreen({ onDone, themeColors, glass, glassDark }) {
               <button type="button" onClick={() => setShowPassword(v => !v)}
                 style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)",
                   background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex" }}>
-                <EyeIcon visible={showPassword} />
+                <EyeIcon visible={showPassword} color={C.inkMute} />
               </button>
             </div>
             <div style={{ position: "relative" }}>
@@ -5258,7 +5250,7 @@ function PasswordResetScreen({ onDone, themeColors, glass, glassDark }) {
               <button type="button" onClick={() => setShowPassword(v => !v)}
                 style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)",
                   background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex" }}>
-                <EyeIcon visible={showPassword} />
+                <EyeIcon visible={showPassword} color={C.inkMute} />
               </button>
             </div>
             {error && <div style={{ fontSize: 12, color: RED, background: `${RED}18`, borderRadius: 8, padding: "9px 13px" }}>{error}</div>}
@@ -5276,7 +5268,7 @@ function PasswordResetScreen({ onDone, themeColors, glass, glassDark }) {
   );
 }
 
-function AuthScreen({ onBack, onSuccess, themeColors, glass, glassDark }) {
+function AuthScreen({ onBack, themeColors, glass, glassDark }) {
   const C = themeColors;
   const [mode, setMode] = useState("login"); // "login" | "register"
   const [email, setEmail] = useState("");
@@ -5345,17 +5337,6 @@ function AuthScreen({ onBack, onSuccess, themeColors, glass, glassDark }) {
     fontWeight: 800, cursor: loading ? "default" : "pointer", color: C.glassDarkInk,
     opacity: loading ? 0.6 : 1,
   };
-  const EyeIcon = ({ visible }) => visible ? (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={C.inkMute} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
-    </svg>
-  ) : (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={C.inkMute} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
-      <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
-      <line x1="1" y1="1" x2="23" y2="23"/>
-    </svg>
-  );
 
   if (done) {
     return (
@@ -5446,7 +5427,7 @@ function AuthScreen({ onBack, onSuccess, themeColors, glass, glassDark }) {
               <button type="button" onClick={() => setShowPassword(v => !v)}
                 style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)",
                   background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex" }}>
-                <EyeIcon visible={showPassword} />
+                <EyeIcon visible={showPassword} color={C.inkMute} />
               </button>
             </div>
             {mode === "register" && (
@@ -5459,7 +5440,7 @@ function AuthScreen({ onBack, onSuccess, themeColors, glass, glassDark }) {
                 <button type="button" onClick={() => setShowPassword(v => !v)}
                   style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)",
                     background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex" }}>
-                  <EyeIcon visible={showPassword} />
+                  <EyeIcon visible={showPassword} color={C.inkMute} />
                 </button>
               </div>
             )}
@@ -5800,17 +5781,6 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
           border: `1px solid ${C.hairline}`, borderRadius: 10, padding: "11px 14px",
           fontFamily: "inherit", fontSize: 14, color: C.ink, outline: "none",
         };
-        const EyeIcon = ({ visible }) => visible ? (
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.inkMute} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
-          </svg>
-        ) : (
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.inkMute} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
-            <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
-            <line x1="1" y1="1" x2="23" y2="23"/>
-          </svg>
-        );
         return (
           <>
             {/* Sécurité */}
@@ -5853,7 +5823,7 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
                     <button type="button" onClick={() => setShowNewPwd(v => !v)}
                       style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)",
                         background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex" }}>
-                      <EyeIcon visible={showNewPwd} />
+                      <EyeIcon visible={showNewPwd} color={C.inkMute} size={16} />
                     </button>
                   </div>
                   <div style={{ position: "relative" }}>
@@ -5865,7 +5835,7 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
                     <button type="button" onClick={() => setShowNewPwd(v => !v)}
                       style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)",
                         background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex" }}>
-                      <EyeIcon visible={showNewPwd} />
+                      <EyeIcon visible={showNewPwd} color={C.inkMute} size={16} />
                     </button>
                   </div>
                   <button type="submit"
