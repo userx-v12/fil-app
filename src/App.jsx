@@ -1308,21 +1308,21 @@ const VERSUS_RANKS = [
 ];
 
 const SOLO_RANKS = [
-  { name: "Figurant I",        min: 800,  nextMin: 867  },
-  { name: "Figurant II",       min: 867,  nextMin: 934  },
-  { name: "Figurant III",      min: 934,  nextMin: 1000 },
-  { name: "Second Rôle I",    min: 1000, nextMin: 1117 },
-  { name: "Second Rôle II",   min: 1117, nextMin: 1234 },
-  { name: "Second Rôle III",  min: 1234, nextMin: 1350 },
-  { name: "Premier Rôle I",   min: 1350, nextMin: 1500 },
-  { name: "Premier Rôle II",  min: 1500, nextMin: 1650 },
-  { name: "Premier Rôle III", min: 1650, nextMin: 1800 },
-  { name: "Vedette I",         min: 1800, nextMin: 2000 },
-  { name: "Vedette II",        min: 2000, nextMin: 2200 },
-  { name: "Vedette III",       min: 2200, nextMin: 2400 },
-  { name: "Légende I",         min: 2400, nextMin: 2800 },
-  { name: "Légende II",        min: 2800, nextMin: 3200 },
-  { name: "Légende III",       min: 3200, nextMin: null  },
+  { name: "Figurant I",        min: 0,    nextMin: 67   },
+  { name: "Figurant II",       min: 67,   nextMin: 134  },
+  { name: "Figurant III",      min: 134,  nextMin: 200  },
+  { name: "Second Rôle I",    min: 200,  nextMin: 317  },
+  { name: "Second Rôle II",   min: 317,  nextMin: 434  },
+  { name: "Second Rôle III",  min: 434,  nextMin: 550  },
+  { name: "Premier Rôle I",   min: 550,  nextMin: 700  },
+  { name: "Premier Rôle II",  min: 700,  nextMin: 850  },
+  { name: "Premier Rôle III", min: 850,  nextMin: 1000 },
+  { name: "Vedette I",         min: 1000, nextMin: 1200 },
+  { name: "Vedette II",        min: 1200, nextMin: 1400 },
+  { name: "Vedette III",       min: 1400, nextMin: 1600 },
+  { name: "Légende I",         min: 1600, nextMin: 2000 },
+  { name: "Légende II",        min: 2000, nextMin: 2400 },
+  { name: "Légende III",       min: 2400, nextMin: null  },
 ];
 
 function getRankInfo(score, ranks) {
@@ -1826,7 +1826,7 @@ export default function App() {
         </>
       )}
       {showRankPopup && (() => {
-        const sr = profile ? getRankInfo(profile.solo_score ?? 800, SOLO_RANKS) : null;
+        const sr = profile ? getRankInfo((profile.solo_score ?? 800) - 800, SOLO_RANKS) : null;
         const vr = profile ? getRankInfo(profile.versus_elo ?? 0, VERSUS_RANKS) : null;
         return (
           <div onClick={() => setShowRankPopup(false)}
@@ -2043,7 +2043,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.44</div>
+      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.45</div>
     </div>
   );
 }
@@ -5613,7 +5613,8 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
     if (e.key === "Escape") setEditing(false);
   }
 
-  const soloRank   = isLoggedIn ? getRankInfo(profile.solo_score   ?? 800,  SOLO_RANKS)   : null;
+  const soloDisplayScore = isLoggedIn ? (profile.solo_score ?? 800) - 800 : 0;
+  const soloRank   = isLoggedIn ? getRankInfo(soloDisplayScore, SOLO_RANKS) : null;
   const versusRank = isLoggedIn ? getRankInfo(profile.versus_elo ?? 0, VERSUS_RANKS) : null;
 
   const sectionLabel = { fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, marginBottom: 14, fontWeight: 600 };
@@ -5721,7 +5722,7 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
           <div style={{ marginBottom: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
               <span style={{ fontSize: 18, fontWeight: 800, color: C.ink, letterSpacing: -0.5 }}>{soloRank.name}</span>
-              <span style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>{profile.solo_score ?? 800} pts</span>
+              <span style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>{soloDisplayScore} pts</span>
             </div>
             <div style={{ height: 5, borderRadius: 99, background: C.hairline, overflow: "hidden" }}>
               <div style={{ height: "100%", borderRadius: 99, background: C.ink,
@@ -5729,7 +5730,7 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
             </div>
             {soloRank.nextMin && (
               <div style={{ fontSize: 10, color: C.inkMute, marginTop: 4, textAlign: "right" }}>
-                {soloRank.nextMin - (profile.solo_score ?? 800)} pts pour {SOLO_RANKS.find(r => r.min === soloRank.nextMin)?.name}
+                {soloRank.nextMin - soloDisplayScore} pts pour {SOLO_RANKS.find(r => r.min === soloRank.nextMin)?.name}
               </div>
             )}
           </div>
