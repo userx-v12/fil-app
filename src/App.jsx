@@ -1413,6 +1413,7 @@ export default function App() {
   const [versusPrefs, setVersusPrefs] = useState(() => ({ ...DEFAULT_PREFS })); // Prefs Versus indépendantes des prefs globales, partagées avec le Lobby (Mode/Difficulté/filtres avancés uniquement, le reste vit en DB)
   // Série de victoires consécutives en cours, en mémoire (pas de DB) — reset si on quitte le Versus
   const [versusStreak, setVersusStreak] = useState({ winner: null, count: 0 });
+  const [fromMatchmaking, setFromMatchmaking] = useState(false);
   const [authUser, setAuthUser] = useState(null);   // Utilisateur Supabase connecté (ou null)
   const [profile, setProfile] = useState(null);     // Ligne profiles correspondante
 
@@ -1710,6 +1711,7 @@ export default function App() {
   // Crée un salon Versus vierge (pas de défi choisi) et y entre direct en tant que créateur (slot 1).
   // Le pseudo, le type de partie, le mode/difficulté et la condition de victoire se règlent ensuite dans le lobby.
   function handleMatchFound(code) {
+    setFromMatchmaking(true);
     setVersusCode(code);
     setVersusInURL(code);
     setScreen("versus-lobby");
@@ -1930,9 +1932,10 @@ export default function App() {
                                 themeColors={C} glass={glass} glassDark={glassDark} />}
       {screen === "versus-lobby" && versusCode && <VersusLobbyScreen
                                 code={versusCode}
-                                onBack={() => { clearVersusFromURL(); setVersusCode(null); setScreen("multi"); }}
+                                onBack={() => { clearVersusFromURL(); setVersusCode(null); setFromMatchmaking(false); setScreen("multi"); }}
                                 onStartGame={prepareAndStartVersusGame}
                                 versusPrefs={versusPrefs} setVersusPrefs={setVersusPrefs}
+                                fromMatchmaking={fromMatchmaking}
                                 themeColors={C} glass={glass} glassDark={glassDark} />}
       {screen === "versus-join" && <VersusJoinScreen
                                 initialCode={versusCode}
@@ -2054,7 +2057,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.52</div>
+      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.53</div>
     </div>
   );
 }
@@ -4608,7 +4611,7 @@ function VersusJoinScreen({ initialCode, onBack, onJoined, authUserId, themeColo
   );
 }
 
-function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPrefs, themeColors, glass, glassDark }) {
+function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPrefs, fromMatchmaking = false, themeColors, glass, glassDark }) {
   const C = themeColors;
   const [match, setMatch] = useState(null);
   const [players, setPlayers] = useState([]);
@@ -4955,7 +4958,7 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
       )}
 
       {/* Code à partager */}
-      {iAmCreator && !bothReady && (
+      {iAmCreator && !bothReady && !fromMatchmaking && (
         <div style={{ ...glass, borderRadius: 22, padding: 24, marginBottom: 20, textAlign: "center" }}>
           <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, marginBottom: 12, fontWeight: 600 }}>Code à partager</div>
           <div style={{ fontSize: 38, fontWeight: 800, letterSpacing: 8, color: C.ink, fontVariantNumeric: "tabular-nums", marginBottom: 16 }}>
@@ -4994,7 +4997,7 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
       </div>
 
       {/* Réglages de la partie (créateur uniquement) : condition de victoire, type de partie, mode, difficulté, options */}
-      {iAmCreator && (
+      {iAmCreator && !fromMatchmaking && (
         <div style={{ marginBottom: 20 }}>
           <div style={{ marginBottom: 12 }}>
             <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 8 }}>Condition de victoire</div>
