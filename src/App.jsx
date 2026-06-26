@@ -1421,6 +1421,7 @@ export default function App() {
         if (_event === "SIGNED_IN" && screenRef.current === "auth") setScreen("account");
       });
       else setProfile(null);
+      if (_event === "PASSWORD_RECOVERY") setScreen("password-reset");
     });
     return () => subscription.unsubscribe();
   }, []);
@@ -1922,6 +1923,8 @@ export default function App() {
       {screen === "auth" && <AuthScreen onBack={() => setScreen("account")}
                                   onSuccess={() => setScreen("account")}
                                   themeColors={C} glass={glass} glassDark={glassDark} />}
+      {screen === "password-reset" && <PasswordResetScreen onDone={() => setScreen("account")}
+                                  themeColors={C} glass={glass} glassDark={glassDark} />}
 
     </Background>
   );
@@ -2013,7 +2016,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.33</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.34</div>
     </div>
   );
 }
@@ -5187,16 +5190,117 @@ function PlayerRow({ slot, name, isMe, themeColors }) {
   );
 }
 
-function AuthScreen({ onBack, onSuccess, themeColors, glass, glassDark }) {
+function PasswordResetScreen({ onDone, themeColors, glass, glassDark }) {
   const C = themeColors;
-  const [mode, setMode] = useState("login"); // "login" | "register"
-  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [done, setDone] = useState(false); // confirmation d'inscription
+  const [done, setDone] = useState(false);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (password !== confirmPassword) { setError("Les mots de passe ne correspondent pas."); return; }
+    setError(null);
+    setLoading(true);
+    const { error: err } = await supabase.auth.updateUser({ password });
+    setLoading(false);
+    if (err) { setError(err.message); return; }
+    setDone(true);
+    setTimeout(onDone, 1800);
+  }
+
+  const inputStyle = {
+    width: "100%", boxSizing: "border-box", background: "transparent", border: `1px solid ${C.hairline}`,
+    borderRadius: 12, padding: "13px 16px", fontFamily: "inherit", fontSize: 15, color: C.ink, outline: "none",
+  };
+  const EyeIcon = ({ visible }) => visible ? (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={C.inkMute} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+    </svg>
+  ) : (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={C.inkMute} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
+      <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+      <line x1="1" y1="1" x2="23" y2="23"/>
+    </svg>
+  );
+
+  return (
+    <div style={{ minHeight: "100vh", padding: "70px 20px 40px", maxWidth: 420, margin: "0 auto" }}>
+      <div style={{ ...glass, borderRadius: 22, padding: 24 }}>
+        <div style={{ fontSize: 17, fontWeight: 800, color: C.ink, marginBottom: 6 }}>Nouveau mot de passe</div>
+        {done ? (
+          <div style={{ textAlign: "center", padding: "16px 0" }}>
+            <div style={{ fontSize: 28, marginBottom: 10 }}>✓</div>
+            <div style={{ fontSize: 14, color: C.green, fontWeight: 700 }}>Mot de passe mis à jour !</div>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 16 }}>
+            <div style={{ position: "relative" }}>
+              <input type={showPassword ? "text" : "password"} placeholder="Nouveau mot de passe"
+                value={password} onChange={e => setPassword(e.target.value)}
+                required minLength={6} autoComplete="new-password"
+                style={{ ...inputStyle, paddingRight: 46 }} />
+              <button type="button" onClick={() => setShowPassword(v => !v)}
+                style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)",
+                  background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex" }}>
+                <EyeIcon visible={showPassword} />
+              </button>
+            </div>
+            <div style={{ position: "relative" }}>
+              <input type={showPassword ? "text" : "password"} placeholder="Confirmer le mot de passe"
+                value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)}
+                required minLength={6} autoComplete="new-password"
+                style={{ ...inputStyle, paddingRight: 46,
+                  borderColor: confirmPassword && confirmPassword !== password ? RED : C.hairline }} />
+              <button type="button" onClick={() => setShowPassword(v => !v)}
+                style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)",
+                  background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex" }}>
+                <EyeIcon visible={showPassword} />
+              </button>
+            </div>
+            {error && <div style={{ fontSize: 12, color: RED, background: `${RED}18`, borderRadius: 8, padding: "9px 13px" }}>{error}</div>}
+            <button type="submit" disabled={loading}
+              style={{ ...glassDark, width: "100%", borderRadius: 13, padding: "14px 0", border: "none",
+                fontFamily: "inherit", fontSize: 12, letterSpacing: 1.5, textTransform: "uppercase",
+                fontWeight: 800, cursor: loading ? "default" : "pointer", color: C.glassDarkInk,
+                opacity: loading ? 0.6 : 1, marginTop: 4 }}>
+              {loading ? "…" : "Enregistrer"}
+            </button>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AuthScreen({ onBack, onSuccess, themeColors, glass, glassDark }) {
+  const C = themeColors;
+  const [mode, setMode] = useState("login"); // "login" | "register"
+  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [done, setDone] = useState(false);
+  const [forgotMode, setForgotMode] = useState(false);
+  const [forgotSent, setForgotSent] = useState(false);
+
+  async function handleForgot(e) {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+    const { error: err } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: window.location.origin,
+    });
+    setLoading(false);
+    if (err) { setError(err.message); return; }
+    setForgotSent(true);
+  }
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -5210,7 +5314,14 @@ function AuthScreen({ onBack, onSuccess, themeColors, glass, glassDark }) {
       const { data, error: err } = await supabase.auth.signUp({ email: email.trim(), password });
       if (err) { setError(err.message); setLoading(false); return; }
       if (data?.session) {
-        // Confirmation email désactivée : déjà connecté, navigation via SIGNED_IN
+        // Sauvegarde le username immédiatement si renseigné
+        if (username.trim()) {
+          await supabase.from("profiles").upsert(
+            { id: data.user.id, username: username.trim() },
+            { onConflict: "id" }
+          ).catch(() => {});
+        }
+        // Navigation via SIGNED_IN dans onAuthStateChange
       } else {
         setDone(true);
         setLoading(false);
@@ -5280,7 +5391,7 @@ function AuthScreen({ onBack, onSuccess, themeColors, glass, glassDark }) {
         {/* Toggle login / register */}
         <div style={{ display: "flex", gap: 4, background: C.bg, borderRadius: 12, padding: 4, marginBottom: 24 }}>
           {["login", "register"].map(m => (
-            <button key={m} onClick={() => { setMode(m); setError(null); setConfirmPassword(""); setShowPassword(false); }}
+            <button key={m} onClick={() => { setMode(m); setError(null); setConfirmPassword(""); setUsername(""); setShowPassword(false); setForgotMode(false); setForgotSent(false); }}
               style={{ flex: 1, borderRadius: 9, padding: "9px 0", border: "none", fontFamily: "inherit",
                 fontSize: 11, letterSpacing: 1.5, textTransform: "uppercase", fontWeight: 700, cursor: "pointer",
                 background: mode === m ? C.ink : "transparent", color: mode === m ? C.bg : C.inkSoft,
@@ -5290,43 +5401,83 @@ function AuthScreen({ onBack, onSuccess, themeColors, glass, glassDark }) {
           ))}
         </div>
 
-        <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <input type="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)}
-            required autoComplete="email" style={inputStyle} />
-          <div style={{ position: "relative" }}>
-            <input type={showPassword ? "text" : "password"} placeholder="Mot de passe" value={password}
-              onChange={e => setPassword(e.target.value)}
-              required minLength={6} autoComplete={mode === "login" ? "current-password" : "new-password"}
-              style={{ ...inputStyle, paddingRight: 46 }} />
-            <button type="button" onClick={() => setShowPassword(v => !v)}
-              style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)",
-                background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex" }}>
-              <EyeIcon visible={showPassword} />
-            </button>
-          </div>
-          {mode === "register" && (
+        {forgotMode ? (
+          forgotSent ? (
+            <div style={{ textAlign: "center", padding: "8px 0" }}>
+              <div style={{ fontSize: 28, marginBottom: 12 }}>✉️</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: C.ink, marginBottom: 8 }}>Email envoyé !</div>
+              <div style={{ fontSize: 13, color: C.inkSoft, marginBottom: 20, lineHeight: 1.5 }}>
+                Clique sur le lien reçu à <strong>{email}</strong> pour définir un nouveau mot de passe.
+              </div>
+              <button onClick={() => { setForgotMode(false); setForgotSent(false); }}
+                style={{ ...btnStyle, width: "auto", padding: "11px 24px" }}>Retour</button>
+            </div>
+          ) : (
+            <form onSubmit={handleForgot} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ fontSize: 13, color: C.inkSoft, marginBottom: 4 }}>
+                Saisis ton email pour recevoir un lien de réinitialisation.
+              </div>
+              <input type="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)}
+                required autoComplete="email" style={inputStyle} />
+              {error && <div style={{ fontSize: 12, color: RED, background: `${RED}18`, borderRadius: 8, padding: "9px 13px" }}>{error}</div>}
+              <button type="submit" disabled={loading} style={{ ...btnStyle, marginTop: 4 }}>
+                {loading ? "…" : "Envoyer le lien"}
+              </button>
+              <button type="button" onClick={() => { setForgotMode(false); setError(null); }}
+                style={{ background: "none", border: "none", fontSize: 12, color: C.inkMute, cursor: "pointer", fontFamily: "inherit", padding: "4px 0" }}>
+                ← Retour à la connexion
+              </button>
+            </form>
+          )
+        ) : (
+          <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <input type="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)}
+              required autoComplete="email" style={inputStyle} />
+            {mode === "register" && (
+              <input type="text" placeholder="Pseudo (affiché en jeu)" value={username}
+                onChange={e => setUsername(e.target.value)} maxLength={20}
+                autoComplete="username" style={inputStyle} />
+            )}
             <div style={{ position: "relative" }}>
-              <input type={showPassword ? "text" : "password"} placeholder="Confirmer le mot de passe"
-                value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)}
-                required minLength={6} autoComplete="new-password"
-                style={{ ...inputStyle, paddingRight: 46,
-                  borderColor: confirmPassword && confirmPassword !== password ? RED : C.hairline }} />
+              <input type={showPassword ? "text" : "password"} placeholder="Mot de passe" value={password}
+                onChange={e => setPassword(e.target.value)}
+                required minLength={6} autoComplete={mode === "login" ? "current-password" : "new-password"}
+                style={{ ...inputStyle, paddingRight: 46 }} />
               <button type="button" onClick={() => setShowPassword(v => !v)}
                 style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)",
                   background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex" }}>
                 <EyeIcon visible={showPassword} />
               </button>
             </div>
-          )}
-          {error && (
-            <div style={{ fontSize: 12, color: RED, background: `${RED}18`, borderRadius: 8, padding: "9px 13px" }}>
-              {error}
-            </div>
-          )}
-          <button type="submit" disabled={loading} style={{ ...btnStyle, marginTop: 4 }}>
-            {loading ? "…" : mode === "login" ? "Se connecter" : "Créer mon compte"}
-          </button>
-        </form>
+            {mode === "register" && (
+              <div style={{ position: "relative" }}>
+                <input type={showPassword ? "text" : "password"} placeholder="Confirmer le mot de passe"
+                  value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)}
+                  required minLength={6} autoComplete="new-password"
+                  style={{ ...inputStyle, paddingRight: 46,
+                    borderColor: confirmPassword && confirmPassword !== password ? RED : C.hairline }} />
+                <button type="button" onClick={() => setShowPassword(v => !v)}
+                  style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)",
+                    background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex" }}>
+                  <EyeIcon visible={showPassword} />
+                </button>
+              </div>
+            )}
+            {error && (
+              <div style={{ fontSize: 12, color: RED, background: `${RED}18`, borderRadius: 8, padding: "9px 13px" }}>{error}</div>
+            )}
+            <button type="submit" disabled={loading} style={{ ...btnStyle, marginTop: 4 }}>
+              {loading ? "…" : mode === "login" ? "Se connecter" : "Créer mon compte"}
+            </button>
+            {mode === "login" && (
+              <button type="button" onClick={() => { setForgotMode(true); setError(null); }}
+                style={{ background: "none", border: "none", fontSize: 12, color: C.inkMute, cursor: "pointer",
+                  fontFamily: "inherit", padding: "2px 0", textAlign: "center" }}>
+                Mot de passe oublié ?
+              </button>
+            )}
+          </form>
+        )}
       </div>
     </div>
   );
@@ -5342,6 +5493,42 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
   const inputRef = useRef(null);
   const [showMigrate, setShowMigrate] = useState(false);
   const [migrating, setMigrating] = useState(false);
+
+  // Sécurité
+  const [newEmail, setNewEmail] = useState("");
+  const [emailMsg, setEmailMsg] = useState(null);
+  const [newPwd, setNewPwd] = useState("");
+  const [confirmPwd, setConfirmPwd] = useState("");
+  const [showNewPwd, setShowNewPwd] = useState(false);
+  const [pwdMsg, setPwdMsg] = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState("");
+  const [deleting, setDeleting] = useState(false);
+
+  async function handleChangeEmail(e) {
+    e.preventDefault();
+    setEmailMsg(null);
+    const { error } = await supabase.auth.updateUser({ email: newEmail.trim() });
+    if (error) { setEmailMsg({ ok: false, text: error.message }); return; }
+    setEmailMsg({ ok: true, text: "Email mis à jour. Vérifie ta boîte mail si une confirmation est requise." });
+    setNewEmail("");
+  }
+  async function handleChangePwd(e) {
+    e.preventDefault();
+    if (newPwd !== confirmPwd) { setPwdMsg({ ok: false, text: "Les mots de passe ne correspondent pas." }); return; }
+    setPwdMsg(null);
+    const { error } = await supabase.auth.updateUser({ password: newPwd });
+    if (error) { setPwdMsg({ ok: false, text: error.message }); return; }
+    setPwdMsg({ ok: true, text: "Mot de passe mis à jour !" });
+    setNewPwd(""); setConfirmPwd("");
+  }
+  async function handleDeleteAccount() {
+    if (deleteConfirm !== "SUPPRIMER") return;
+    setDeleting(true);
+    const { error } = await supabase.rpc("delete_my_account");
+    if (error) { setDeleting(false); alert("Erreur : " + error.message); return; }
+    await supabase.auth.signOut();
+    onLogout?.();
+  }
 
   // Propose migration si connecté + données locales + pas encore migré
   useEffect(() => {
@@ -5607,6 +5794,106 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
           <span style={statValue}>{versusHints}</span>
         </div>
       </div>
+
+      {isLoggedIn && (() => {
+        const inputS = {
+          width: "100%", boxSizing: "border-box", background: "transparent",
+          border: `1px solid ${C.hairline}`, borderRadius: 10, padding: "11px 14px",
+          fontFamily: "inherit", fontSize: 14, color: C.ink, outline: "none",
+        };
+        const EyeIcon = ({ visible }) => visible ? (
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.inkMute} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+          </svg>
+        ) : (
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.inkMute} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
+            <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+            <line x1="1" y1="1" x2="23" y2="23"/>
+          </svg>
+        );
+        return (
+          <>
+            {/* Sécurité */}
+            <div style={{ ...glass, borderRadius: 22, padding: 20, marginBottom: 16 }}>
+              <div style={sectionLabel}>Sécurité</div>
+              {/* Changer l'email */}
+              <form onSubmit={handleChangeEmail} style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: C.inkSoft, letterSpacing: 0.5, marginBottom: 8 }}>Changer l'email</div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input type="email" placeholder="Nouvel email" value={newEmail} onChange={e => setNewEmail(e.target.value)}
+                    required style={{ ...inputS, flex: 1 }} />
+                  <button type="submit"
+                    style={{ ...glassDark, borderRadius: 10, padding: "0 16px", border: "none",
+                      fontFamily: "inherit", fontSize: 11, fontWeight: 700, letterSpacing: 0.5,
+                      cursor: "pointer", color: C.glassDarkInk, whiteSpace: "nowrap" }}>
+                    Enregistrer
+                  </button>
+                </div>
+                {emailMsg && <div style={{ fontSize: 11, marginTop: 6, color: emailMsg.ok ? C.green : RED }}>{emailMsg.text}</div>}
+              </form>
+              <div style={{ height: 1, background: C.hairline, marginBottom: 16 }} />
+              {/* Changer le mot de passe */}
+              <form onSubmit={handleChangePwd}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: C.inkSoft, letterSpacing: 0.5, marginBottom: 8 }}>Changer le mot de passe</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ position: "relative" }}>
+                    <input type={showNewPwd ? "text" : "password"} placeholder="Nouveau mot de passe"
+                      value={newPwd} onChange={e => setNewPwd(e.target.value)}
+                      required minLength={6} autoComplete="new-password"
+                      style={{ ...inputS, paddingRight: 40 }} />
+                    <button type="button" onClick={() => setShowNewPwd(v => !v)}
+                      style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)",
+                        background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex" }}>
+                      <EyeIcon visible={showNewPwd} />
+                    </button>
+                  </div>
+                  <div style={{ position: "relative" }}>
+                    <input type={showNewPwd ? "text" : "password"} placeholder="Confirmer"
+                      value={confirmPwd} onChange={e => setConfirmPwd(e.target.value)}
+                      required minLength={6} autoComplete="new-password"
+                      style={{ ...inputS, paddingRight: 40,
+                        borderColor: confirmPwd && confirmPwd !== newPwd ? RED : C.hairline }} />
+                    <button type="button" onClick={() => setShowNewPwd(v => !v)}
+                      style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)",
+                        background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex" }}>
+                      <EyeIcon visible={showNewPwd} />
+                    </button>
+                  </div>
+                  <button type="submit"
+                    style={{ ...glassDark, borderRadius: 10, padding: "10px 0", border: "none",
+                      fontFamily: "inherit", fontSize: 11, fontWeight: 700, letterSpacing: 0.5,
+                      cursor: "pointer", color: C.glassDarkInk }}>
+                    Enregistrer
+                  </button>
+                </div>
+                {pwdMsg && <div style={{ fontSize: 11, marginTop: 6, color: pwdMsg.ok ? C.green : RED }}>{pwdMsg.text}</div>}
+              </form>
+            </div>
+
+            {/* Suppression de compte */}
+            <div style={{ ...glass, borderRadius: 22, padding: 20, marginBottom: 16, border: `1px solid ${RED}30` }}>
+              <div style={{ ...sectionLabel, color: RED }}>Zone dangereuse</div>
+              <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 12, lineHeight: 1.5 }}>
+                Supprimer définitivement ton compte et toutes tes données. Cette action est irréversible.
+              </div>
+              <input placeholder='Tape "SUPPRIMER" pour confirmer' value={deleteConfirm}
+                onChange={e => setDeleteConfirm(e.target.value)}
+                style={{ ...inputS, marginBottom: 10, borderColor: `${RED}50` }} />
+              <button onClick={handleDeleteAccount}
+                disabled={deleteConfirm !== "SUPPRIMER" || deleting}
+                style={{ width: "100%", borderRadius: 10, padding: "10px 0", border: "none",
+                  fontFamily: "inherit", fontSize: 11, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase",
+                  cursor: deleteConfirm !== "SUPPRIMER" || deleting ? "not-allowed" : "pointer",
+                  background: deleteConfirm === "SUPPRIMER" ? RED : C.hairline,
+                  color: deleteConfirm === "SUPPRIMER" ? "#fff" : C.inkMute,
+                  opacity: deleting ? 0.6 : 1 }}>
+                {deleting ? "…" : "Supprimer mon compte"}
+              </button>
+            </div>
+          </>
+        );
+      })()}
 
       <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 2, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>
         {isLoggedIn ? "Stats synchronisées sur ton compte" : "Stats enregistrées sur cet appareil · Connecte-toi pour les sauvegarder"}
