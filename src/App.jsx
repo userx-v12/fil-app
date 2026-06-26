@@ -2019,7 +2019,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.37</div>
+      <div style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 24, textTransform: "uppercase", fontWeight: 500 }}>v5.38</div>
     </div>
   );
 }
@@ -4389,7 +4389,7 @@ function VersusJoinScreen({ initialCode, onBack, onJoined, authUserId, themeColo
         <div style={{ fontSize: 10, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, fontWeight: 700, marginBottom: 10 }}>Ton pseudo</div>
         <input value={playerName} onChange={(e) => setPlayerName(e.target.value)}
           placeholder="Mathieu, Kévin…" maxLength={20} disabled={joining}
-          style={{ width: "100%", background: C.cardBg, border: `1px solid ${C.hairline}`,
+          style={{ width: "100%", boxSizing: "border-box", background: C.cardBg, border: `1px solid ${C.hairline}`,
             outline: "none", borderRadius: 14, padding: "12px 16px",
             fontSize: 16, fontFamily: "inherit", color: C.ink, fontWeight: 600 }} />
       </div>
@@ -4399,7 +4399,7 @@ function VersusJoinScreen({ initialCode, onBack, onJoined, authUserId, themeColo
         <input value={formatMatchCode(code.replace(/\D/g, ""))}
           onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
           placeholder="000 000" inputMode="numeric" maxLength={7} disabled={joining}
-          style={{ width: "100%", background: C.cardBg, border: `1px solid ${C.hairline}`,
+          style={{ width: "100%", boxSizing: "border-box", background: C.cardBg, border: `1px solid ${C.hairline}`,
             outline: "none", borderRadius: 14, padding: "16px 20px",
             fontSize: 26, fontFamily: "inherit", color: C.ink, fontWeight: 800,
             letterSpacing: 4, textAlign: "center",
@@ -4765,7 +4765,7 @@ function VersusLobbyScreen({ code, onBack, onStartGame, versusPrefs, setVersusPr
         <div style={{ marginBottom: 20 }}>
           <div style={{ fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.inkSoft, marginBottom: 8, fontWeight: 600 }}>Ton pseudo</div>
           <input value={pseudoInput} onChange={(e) => setPseudoInput(e.target.value)} maxLength={20} disabled={locked}
-            style={{ width: "100%", background: C.cardBg, border: `1px solid ${C.hairline}`,
+            style={{ width: "100%", boxSizing: "border-box", background: C.cardBg, border: `1px solid ${C.hairline}`,
               outline: "none", borderRadius: 14, padding: "12px 16px",
               fontSize: 16, fontFamily: "inherit", color: C.ink, fontWeight: 600 }} />
         </div>
