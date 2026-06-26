@@ -5686,8 +5686,8 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
                 style={{ background: "transparent", border: `1px solid ${C.hairline}`, borderRadius: 999,
                   padding: "6px 12px", fontFamily: "inherit", fontSize: 10, letterSpacing: 1.2,
                   textTransform: "uppercase", fontWeight: 700, color: C.inkSoft, cursor: "pointer",
-                  marginTop: 12, alignSelf: "center" }}>
-                Déco
+                  marginTop: 12, alignSelf: "center", whiteSpace: "nowrap", fontSize: 9 }}>
+                Déconnexion
               </button>
             ) : (
               <button onClick={onOpenAuth}
