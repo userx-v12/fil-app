@@ -28,6 +28,85 @@ Lis CLAUDE.md et SESSION_LOG.md. Dis-moi en 3 lignes où on en est et ce qu'on a
 
 ---
 
+## Session du 2026-06-26 — v5.30 → v5.34
+
+### Ce qu'on a fait
+
+**v5.30 — Système de rangs refonte**
+- `VERSUS_RANKS` et `SOLO_RANKS` passés à 15 entrées (5 rangs × 3 sous-paliers I/II/III)
+- Versus : Figurant I (0) → Légende III (2300+) ; Solo : Figurant I (800) → Légende III (3200+)
+- Elo Versus démarre à 0 au lieu de 1000 — migration SQL exécutée par Mathieu :
+  `ALTER TABLE profiles ALTER COLUMN versus_elo SET DEFAULT 0; UPDATE profiles SET versus_elo = 0;`
+- Suppression de l'affichage "Non classé" (plus nécessaire, Elo=0 = Figurant I)
+- Nouveau bouton flottant étoile (position `"right2"`) avec popup condensé Solo + Versus
+- `TopRoundButton` : nouvelle position `"right2"` = `right: max(62px, calc(50% - 240px + 62px))`
+- Toutes les occurrences `?? 1000` liées à `versus_elo` remplacées par `?? 0`
+
+**v5.31 — Versus UX**
+- Type de partie : `[Sur-mesure, Standard]` — Sur-mesure à gauche et actif par défaut (`customMode: true`)
+- Condition de victoire : `[Temps, Étapes]` — Temps à gauche
+- Mode Sur Mesure : bouton "Modifier" sur le film choisi → appelle `clearCustomPick` (nouvelle fonction top-level)
+- `clearCustomPick` retire le pick de `pending_change` et reset `readySlots`
+
+**v5.32 — Fix redirect + défaut Temps**
+- Bug : `SIGNED_IN` Supabase se déclenche aussi au refresh de token (retour au premier plan) → redirect intempestif vers "compte"
+- Fix : `screenRef` (useRef miroir de `screen`) — navigation vers "compte" gatée sur `screenRef.current === "auth"`
+- Condition de victoire par défaut à la création d'un match : `"time"` (au lieu de `"hybrid"`)
+
+**v5.33 — Auth polish**
+- Bouton œil (afficher/masquer) sur le champ mot de passe, login et inscription
+- Champ "Confirmer le mot de passe" en mode inscription uniquement
+- Bordure rouge si les deux mots de passe diffèrent, erreur au submit si pas identiques
+- Reset champ confirmer + visibilité au toggle entre modes
+
+**v5.34 — Système de compte complet**
+- Inscription : champ `username` (pseudo, optionnel) → `upsert profiles { id, username }` immédiatement après `signUp` avec session
+- Mot de passe oublié : lien sous le formulaire login → `forgotMode` → `resetPasswordForEmail(email, { redirectTo: window.location.origin })` → confirmation inline
+- `PasswordResetScreen` : nouvel écran déclenché par event `PASSWORD_RECOVERY` dans `onAuthStateChange` → `updateUser({ password })` → auto-redirect vers "compte" après 1,8s
+- AccountScreen / card "Sécurité" (connecté uniquement) : changer email (`updateUser({ email })`), changer mot de passe (avec œil + confirmation)
+- AccountScreen / card "Zone dangereuse" : suppression de compte — saisie de "SUPPRIMER" pour activer le bouton → `supabase.rpc("delete_my_account")` → signOut → retour menu
+- SQL à exécuter pour la suppression (exécuté par Mathieu) :
+  ```sql
+  CREATE OR REPLACE FUNCTION delete_my_account()
+  RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+  BEGIN DELETE FROM auth.users WHERE id = auth.uid(); END; $$;
+  ```
+
+### Bugs corrigés
+
+**Bug — Redirect vers "compte" au retour dans l'app (v5.32)**
+- Symptôme : quitter l'app et revenir → atterrir sur l'écran Compte au lieu de rester où on était
+- Cause : `onAuthStateChange` avec event `SIGNED_IN` → `setScreen("account")`. Supabase v2 émet `SIGNED_IN` non seulement au login explicite, mais aussi à chaque refresh de token (quand l'app repasse au premier plan sur iOS/Android/onglet)
+- Fix : `screenRef` (useRef) mis à jour à chaque changement de `screen`, condition `if (_event === "SIGNED_IN" && screenRef.current === "auth") setScreen("account")` — `src/App.jsx` l.~1421
+
+### État actuel du code
+
+- **Version affichée : v5.34**
+- Commits pushés : `f2bfa19` (v5.30), `8110fd3` (v5.31), `3053164` (v5.32), `7f77b19` (v5.33), `1d3e511` (v5.34)
+- Fichier modifié : `src/App.jsx` uniquement
+- Build Vite propre (vérifié)
+- Mathieu n'a pas encore testé v5.34 en prod
+
+### Ce qui reste à faire (backlog v5.35+)
+
+1. Parties "Sur Mesure" solo non comptées dans `solo_games` (résiduel v5.28 — `difficultyUsed === "custom"` non incrémenté)
+2. Redesign visuel (en cours sur Figma)
+3. `character_name` dans `credits` — migration DB
+4. `original_title` dans `works` — migration DB
+5. Phase 6 : App iOS via Capacitor
+
+### Pièges à éviter
+
+- **NE JAMAIS remettre `versus_elo ?? 1000`** — l'Elo part de 0 depuis la migration SQL. La valeur 1000 n'a plus de sens.
+- **NE JAMAIS remettre `if (_event === "SIGNED_IN") setScreen("account")` sans le gate `screenRef.current === "auth"`** — ça remet le bug du redirect au retour dans l'app sur iOS/desktop.
+- **`clearCustomPick` supprime aussi `readySlots`** de `pending_change` — intentionnel : si on change son film, les "OK pour moi" sont reset. Ne pas faire un simple `delete updated[role]` sans `delete updated.readySlots`.
+- **La fonction SQL `delete_my_account` est SECURITY DEFINER** — c'est voulu pour avoir les droits de supprimer dans `auth.users`. Ne pas la modifier.
+- **`syncProfile` utilise `ignoreDuplicates: true`** — si on sauvegarde le `username` dans `handleSubmit` (inscription) via `upsert` AVANT que `syncProfile` tourne, la ligne existe déjà et `syncProfile` ne l'écrase pas. L'ordre est garanti car `syncProfile` est appelé dans `onAuthStateChange` qui est asynchrone.
+- **`PasswordResetScreen`** est déclenché par l'event `PASSWORD_RECOVERY` dans `onAuthStateChange`, pas par une navigation manuelle. Si on touche à `onAuthStateChange`, ne pas supprimer `if (_event === "PASSWORD_RECOVERY") setScreen("password-reset")`.
+- **Position `"right2"` dans `TopRoundButton`** = `right: max(62px, calc(50% - 240px + 62px))`. Layout final : `[?][thème] ......... [★rang][compte]`. Ne pas confondre avec `"right"` = `max(16px, ...)`.
+
+---
+
 ## Session du 2026-06-25 — v5.29
 
 ### Ce qu'on a fait
