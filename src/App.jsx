@@ -2043,7 +2043,7 @@ function Menu({ onNavigate, onPlay, prefs, setPrefs, themeColors, glass, glassDa
         ))}
       </div>
 
-      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.46</div>
+      <div className="menu-version" style={{ textAlign: "center", fontSize: 10, letterSpacing: 3, color: C.inkMute, marginTop: 8, textTransform: "uppercase", fontWeight: 500 }}>v5.47</div>
     </div>
   );
 }
@@ -5330,18 +5330,19 @@ function AuthScreen({ onBack, themeColors, glass, glassDark }) {
       setError("Les mots de passe ne correspondent pas.");
       return;
     }
+    if (mode === "register" && !username.trim()) {
+      setError("Choisis un pseudo.");
+      return;
+    }
     setLoading(true);
     if (mode === "register") {
-      const { data, error: err } = await supabase.auth.signUp({ email: email.trim(), password });
+      const { data, error: err } = await supabase.auth.signUp({
+        email: email.trim(),
+        password,
+        options: { data: { username: username.trim() } },
+      });
       if (err) { setError(err.message); setLoading(false); return; }
       if (data?.session) {
-        // Sauvegarde le username immédiatement si renseigné
-        if (username.trim()) {
-          await supabase.from("profiles").upsert(
-            { id: data.user.id, username: username.trim() },
-            { onConflict: "id" }
-          ).catch(() => {});
-        }
         // Navigation via SIGNED_IN dans onAuthStateChange
       } else {
         setDone(true);
@@ -5588,7 +5589,7 @@ function AccountScreen({ onBack, onOpenAuth, onLogout, onProfileRefresh, themeCo
   const versusLosses  = isLoggedIn ? (profile.versus_losses || 0)   : loadVersusLosses();
   const versusOptimal = isLoggedIn ? (profile.versus_optimal || 0)  : loadVersusOptimal();
   const versusHints   = isLoggedIn ? (profile.versus_hints || 0)    : loadVersusHints();
-  const displayName   = isLoggedIn ? (profile.username || authUser.email) : playerName;
+  const displayName   = isLoggedIn ? (profile.username || authUser.email.split('@')[0]) : playerName;
 
   function startEdit() {
     setNameInput(isLoggedIn ? (profile.username || "") : playerName);
